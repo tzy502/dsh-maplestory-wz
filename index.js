@@ -1442,7 +1442,14 @@ export function apply(ctx, rawConfig = {}) {
     },
     /** 切到纸娃娃模式并（可选）指定部位。 */
     async petSetChara(args = {}) {
-      const equips = (Array.isArray(args.equips) && args.equips.length ? args.equips : currentEquips).map(String);
+      // 取值顺序必须和 `pet()` **一致**：显式传参 → 纸娃娃面板配置 → 自身旧配置。
+      // 之前这里写的是 `args.equips || currentEquips`，**漏掉了纸娃娃配置** →
+      // 面板里改了脸/发型，桌宠却一直吃 `pet-config.json` 里的旧默认值
+      // （用户反馈「脸渲染的是不对的，参考纸娃娃那边修改」）。
+      const fromDoll = dollEquips();
+      const equips = (Array.isArray(args.equips) && args.equips.length
+        ? args.equips
+        : (fromDoll || currentEquips)).map(String);
       // 椅子：存进 background.json 的 doll.chair（纸娃娃面板与桌宠**共用同一份配置**，
       // 不设第二处），并立刻作用于本次渲染。
       const chair = String(args.chairId ?? loadDoll()?.chair ?? '').trim();
