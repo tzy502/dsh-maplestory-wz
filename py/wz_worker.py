@@ -93,6 +93,9 @@ from wzpy.wz_package import resolve_canvas_link  # noqa: E402
 from PIL import Image, ImageFilter  # noqa: E402
 
 DATA_DIR = os.environ.get("WZ_DATA_DIR") or "/Volumes/SSD/mxd/mxd/Data"
+# 区域名直接用 wzpy 的键名（GMS / EMS / BMS）。
+# 没有 CMS 这个键：国服客户端是零 IV，在 wzpy 里就叫 BMS —— 用错了会在
+# 解码时抛 KeyError 或解析出空字符串表，所以这里不做名字映射。
 REGION = os.environ.get("WZ_REGION") or "BMS"
 VERSION = int(os.environ.get("WZ_VERSION") or 228)
 OUT_DIR = os.environ.get("WZ_OUT_DIR") or os.path.expanduser("~/.dsh/wz-assets")

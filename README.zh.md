@@ -55,34 +55,28 @@ ln -s /Users/a502/IdeaProjects/dsh-maplestory-wz \
       name: '@local/dsh-maplestory-wz'
       config:
         dataDir: /path/to/MapleStory/Data    # 改成你自己的
-        region: BMS                          # 见下方说明
+        region: BMS                          # 解密密钥（见下）
         version: 228
 ```
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `dataDir` | — | 客户端的 `Data` 目录，**必填**（示例 `/path/to/MapleStory/Data`） |
-| `region` | `BMS` | 决定字符串表与解密密钥，取值见下 |
+| `region` | `BMS` | 解密密钥名：国服客户端是 `BMS`，国际服 `GMS`，欧服 `EMS` |
 | `version` | `228` | WZ 版本号 |
 | `wzpyPath` | 自动探测 | 含 `wzpy/` 的克隆目录 |
 | `python` | 自动探测 | 带 Pillow、numpy 的解释器 |
 | `mobId` | `1210102` | 桌宠初始怪物 |
 | `scale` `speed` `flySpeed` `flyChance` | `1` `100` `60` `0.35` | 桌宠尺寸与运动 |
 
-**关于 `region`（重要）**：底层 `wzpy` 只认三个密钥 ——
+**关于 `region`**：这个值就是 `wzpy` 的**解密密钥名**（插件没有自己写加解密，
+密钥表来自 `wzpy/crypto.py` 的 `WZ_IV`）。
 
-```python
-WZ_IV = {
-    "GMS": bytes([0x4D, 0x23, 0xC7, 0x2B]),
-    "EMS": bytes([0xB9, 0x7D, 0x63, 0xE9]),
-    "BMS": bytes([0x00, 0x00, 0x00, 0x00]),   # 也用于 CLASSIC / 现代 64 位客户端
-}
-```
+- **国服客户端 → `BMS`**。`wzpy` 里 `BMS` 对应的是**零 IV**（不做 AES 变换），
+  国服客户端用的正是这一套；`wzpy` 里没有 `CMS` 这个键，写 `CMS` 会抛 `KeyError`。
+- 国际服 `GMS`，欧服 `EMS`。
 
-**没有 `CMS` 这个取值**（传进去会 `KeyError: 'CMS'` 直接崩）。而 `BMS` 是**零 IV**，
-不走 AES —— 国内客户端（CMS / 冒险岛）的数据正是这一套，所以 **CMS 客户端也用
-`region: BMS`**。判断方法：如果字符串表能解出中文（例如 `1210102` → `花蘑菇`），
-这个 region 就是对的；解不出来或报 `KeyError` 就是错的。
+判断对不对：**字符串表能解出中文就是对的**（例如 `1210102` → `花蘑菇`）。
 
 解释器按这个顺序探测：`config.python` → `$WZ_PYTHON` →
 `~/.hermes/cache/scratch/wz-env/bin/python` → `/opt/homebrew/bin/python3` →
