@@ -16,7 +16,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
@@ -429,11 +429,15 @@ export function apply(ctx, rawConfig = {}) {
       return { ...out, png: undefined, url: `${ROUTE_PREFIX}/file/${encodeURIComponent(name)}` };
     },
     /** 合成纸娃娃并落盘，返回可直接 <img> 的 URL。 */
+    /** 椅子清单（纸娃娃「椅子」槽位用；椅子在 Item/Install，不是 Character 部件）。 */
+    async chairList(args) {
+      return worker.call('chair_list', args ?? {});
+    },
     async charRender(args) {
       const spec = args ?? {};
       const out = await worker.call('char_render', spec);
       const stamp = createHash('sha1')
-        .update(JSON.stringify({ e: spec.equips, p: spec.pose, f: spec.flip, fr: spec.frame }))
+        .update(JSON.stringify({ e: spec.equips, p: spec.pose, f: spec.flip, fr: spec.frame, c: spec.chairId }))
         .digest('hex').slice(0, 10);
       const name = `chara_${stamp}.png`;
       const fs = await import('node:fs/promises');
@@ -1274,7 +1278,9 @@ export function apply(ctx, rawConfig = {}) {
   };
   const petActions = Array.isArray(rawConfig.actions) && rawConfig.actions.length
     ? rawConfig.actions.map(String)
-    : ['stand', 'move', 'hit1', 'fly', 'die'];
+    // 带上 sit：坐椅子时客户端会把动作钉在 sit（用户口径：上椅子后不动）
+    : ['stand', 'move', 'hit1', 'fly', 'die', 'sit'];
+    
   const petEquipsDefault = Array.isArray(rawConfig.equips) && rawConfig.equips.length
     ? rawConfig.equips.map(String)
     : ['00002000', '00012000', '00030000', '00020000'];
@@ -1299,6 +1305,24 @@ export function apply(ctx, rawConfig = {}) {
     }
     return dollCache.doll;
   }
+  /**
+   * 把纸娃娃（部位 + 椅子）写回 `background.json` 的 `doll`。
+   * 纸娃娃面板与桌宠**共用这一份**，所以这里写一次两边都变。
+   */
+  function saveDoll(next) {
+    try {
+      let raw = {};
+      try { raw = JSON.parse(readFileSync(BG_CONFIG, 'utf8')) || {}; } catch { raw = {}; }
+      raw.doll = { ...(raw.doll || {}), ...next };
+      writeFileSync(BG_CONFIG, JSON.stringify(raw, null, 2), 'utf8');
+      dollCache = { at: 0, doll: raw.doll };   // 让下次 loadDoll 立刻读到新值
+      return raw.doll;
+    } catch (e) {
+      logger.warning?.(`写 doll 失败：${e.message}`);
+      return null;
+    }
+  }
+
   /** 纸娃娃面板里真正选了编号的部位（去掉空值）。 */
   function dollEquips() {
     const d = loadDoll();
@@ -1344,8 +1368,12 @@ export function apply(ctx, rawConfig = {}) {
         ? args.equips.map(String)
         : (fromDoll || currentEquips);
       const earType = args.earType ?? loadDoll()?.earType ?? 'humanEar';
+      // 椅子从**同一份**纸娃娃配置读（background.json 的 doll.chair），不设第二处。
+      // 挂了椅子 → worker 自动改坐姿 + 叠椅子层；坐姿只有 1 帧，桌宠天然静止。
+      const chairId = String(args.chairId ?? loadDoll()?.chair ?? '').trim();
       const data = mode === 'chara'
-        ? await petWorker.call('chara', { equips, actions: want, flip: !!args.flip, earType })
+        ? await petWorker.call('chara', { equips, actions: want, flip: !!args.flip, earType,
+                                         chairId })
         : await petWorker.call('pet', { id, actions: want, originFallback });
       const anims = {};
       for (const [key, value] of Object.entries(data.anims ?? {})) {
@@ -1415,13 +1443,20 @@ export function apply(ctx, rawConfig = {}) {
     /** 切到纸娃娃模式并（可选）指定部位。 */
     async petSetChara(args = {}) {
       const equips = (Array.isArray(args.equips) && args.equips.length ? args.equips : currentEquips).map(String);
-      const data = await petApi.pet({ mode: 'chara', equips });
+      // 椅子：存进 background.json 的 doll.chair（纸娃娃面板与桌宠**共用同一份配置**，
+      // 不设第二处），并立刻作用于本次渲染。
+      const chair = String(args.chairId ?? loadDoll()?.chair ?? '').trim();
+      const doll = loadDoll() || {};
+      // equips 在 doll 里是**按部位名索引的对象**（面板从它恢复每个槽位），
+      // 这里只更新椅子 —— 之前顺手把 equips 也写成数组，面板读到后所有槽位都空了（实测回归）。
+      saveDoll({ ...doll, chair });
+      const data = await petApi.pet({ mode: 'chara', equips, chairId: chair });
       const usable = Object.keys(data.anims ?? {});
       if (!usable.length) throw new Error('这组部位没有可用动作，检查编号是否存在');
       currentMode = 'chara';
       currentEquips = equips;
       await savePetConfig({ mode: 'chara', equips, mobId: currentMobId, name: '纸娃娃' });
-      return { mode: 'chara', equips, pet: data };
+      return { mode: 'chara', equips, chair, pet: data };
     },
     /** 切回怪物模式。 */
     async petSetMob(args = {}) {

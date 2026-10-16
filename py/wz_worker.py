@@ -112,6 +112,7 @@ _WORKER_DIR = os.path.dirname(os.path.abspath(__file__))
 if _WORKER_DIR not in sys.path:
     sys.path.insert(0, _WORKER_DIR)
 import cmsdl_support  # noqa: E402
+import chair_support
 import doll_shared  # noqa: E402
 import effect_support  # noqa: E402
 
@@ -891,6 +892,146 @@ def _effect_lookup():
 _EFFECT_LOOKUP: Any = None
 
 
+def cmd_chair_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    """椅子清单（纸娃娃「椅子」槽位的候选）。
+
+    椅子不是 Character 部件（在 `Item/Install/*.img`），wzpy 的类目表里没有它，
+    所以这里自己扫：按 `Item/Install/{id//1000:05d}.img` 分卷找 0301xxxx，名字取
+    `String/Ins.img`（键不补零）。
+    """
+    import chair_support
+    root = root_for("Item")
+    sroot = root_for("String")
+    parsed = _parsed_image
+
+    class _Acc:
+        def canvas_meta(self, frame, r):
+            return None
+
+    # String/Ins.img 的每个条目是 **WzSubProperty**（不是字符串节点），
+    # 名字在它的 `name` 子节点里（形如 {name: "变出花田的魔法椅子", desc: ...}）。
+    # 第一版按 `value` 读 → 全 None → 2500 把椅子全显示「（无名字）」。
+    names = {}
+    try:
+        ins = parsed(sroot, "Ins.img")
+        if ins is not None:
+            for c in ins.children():
+                key = str(getattr(c, "name", c))
+                val = getattr(c, "value", None)
+                if isinstance(val, str) and val:
+                    names[key] = val
+                    continue
+                try:
+                    sub = c.get("name")
+                except Exception:  # noqa: BLE001
+                    sub = None
+                v2 = getattr(sub, "value", None) if sub is not None else None
+                if isinstance(v2, str) and v2:
+                    names[key] = v2
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 椅子分卷名 = id // 1000 补 5 位（实测 03019.img 装了 696 把）。
+    # 只有 4 位/6 位两种旧版格式，一并试一下。
+    out = []
+    seen = set()
+    for gi in range(3000, 3050):
+        for path in (f"Install/{gi:05d}.img", f"Install/{gi // 10:04d}.img", f"Install/{gi * 10:06d}.img"):
+            img = parsed(root, path)
+            if img is None:
+                continue
+            try:
+                kids = [str(getattr(c, "name", c)) for c in img.children()]
+            except Exception:  # noqa: BLE001
+                continue
+            for k in kids:
+                n = k.lstrip("0")
+                if not n.startswith("301") or k in seen:
+                    continue
+                seen.add(k)
+                out.append({"id": k, "name": names.get(k) or names.get(n) or "（无名字）"})
+    out.sort(key=lambda r: r["id"])
+    q = str(args.get("query") or "").strip()
+    if q:
+        out = [r for r in out if q in r["name"] or q in r["id"]]
+    limit = int(args.get("limit") or 200)
+    return {"chairs": out[:limit], "total": len(out)}
+
+
+class _ChairAccess:
+    """把 worker 的画布解码能力包成 chair_support 期望的接口。
+
+    chair_support 刻意不 import worker（避免循环依赖），所以由这里注入：
+      - `__call__(root, path)` → 取 WzImage（与 `_parsed_image` 同源）
+      - `canvas_meta(frame, root)` → 画布宽高/origin/link（与 `_canvas_meta` 同源）
+    """
+
+    def __call__(self, root, path):
+        return _parsed_image(root, path)
+
+    def canvas_meta(self, frame, root):
+        return _canvas_meta(frame, root, None, "Item")
+
+
+def _chair_piece_cache():
+    global _CHAIR_CACHE
+    try:
+        return _CHAIR_CACHE
+    except NameError:
+        _CHAIR_CACHE = {}
+        return _CHAIR_CACHE
+
+
+def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str):
+    """把椅子按 minipet 的层级/偏移叠到角色帧上，返回**扩展过画布**的新图。
+
+    navel 的像素位置取自渲染器自己的 `_build_placements(..., return_anchors=True)`：
+    navel 是世界原点 (0,0)，所以它在合成图里就是 `(-min_x, -min_y)`。
+    这比从图上找肚脐可靠得多（实测红十字正好落在腰部）。
+    """
+    try:
+        chair = chair_support.render_chair_pieces(
+            root_for("Item"), _ChairAccess(), decode_canvas, REGION, chair_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("椅子 %s 读取失败：%s", chair_id, exc)
+        return img
+    if not chair:
+        logger.warning("椅子 %s 不存在（Item/Install 下没找到）", chair_id)
+        return img
+
+    cr = char_renderer()
+    navel = None
+    try:
+        pls, _anchors = cr._build_placements(
+            equips, pose=pose, frame=0, ear_type=None,
+            hide_hair_full=False, hide_hair_set=frozenset(),
+            cap_vslot_tokens=frozenset(), return_anchors=True)
+        tops = [p.top_left for p in pls if p.top_left is not None]
+        if tops:
+            navel = (-min(t[0] for t in tops), -min(t[1] for t in tops))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取 navel 失败（椅子将按画布中心兜底）：%s", exc)
+    if navel is None:
+        navel = (img.width // 2, img.height)
+
+    try:
+        return chair_support.compose_with_chair(
+            img, navel, chair, chair_id, frame_index=0,
+            has_sit_action=_has_action(equips, "sit"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("椅子合成失败：%s", exc)
+        return img
+
+
+def _has_action(equips, action: str) -> bool:
+    """角色是否有该动作（minipet `ResolveChairAction` 用它决定偏移分支）。"""
+    try:
+        # wzpy 只有 pose_frame_delays（没有 pose_frame_count）：非空即代表有该动作
+        return len(char_renderer().pose_frame_delays(action, equips[0] if equips else None) or []) > 0
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def cmd_char_render(args: Dict[str, Any]) -> Dict[str, Any]:
     """按装备编号合成角色帧（纸娃娃）。equips 给几个部位就画几个。"""
     cr = char_renderer()
@@ -900,6 +1041,11 @@ def cmd_char_render(args: Dict[str, Any]) -> Dict[str, Any]:
     pose = str(args.get("pose") or "stand1")
     flip = bool(args.get("flip"))
     frame = int(args.get("frame") or 0)
+    # 椅子（可选）：纸娃娃可挂一把椅子，角色自动改坐姿并叠上椅子层。
+    # 层级与偏移照 minipet `PaperdollService`（见 chair_support 模块注释）。
+    chair_id = str(args.get("chairId") or args.get("chair") or "").strip()
+    if chair_id:
+        pose = "sit"
     # 耳型：Head 里可选的耳朵 canvas 名（humanEar/ear/lefEar/highlefEar）。
     # 人类头型自带圆耳，所以默认 humanEar；想要精灵耳等就显式传。
     ear_type = str(args.get("earType") or args.get("ear_type") or "").strip() or None
@@ -908,7 +1054,7 @@ def cmd_char_render(args: Dict[str, Any]) -> Dict[str, Any]:
     # 缓存 key 必须带上**合成语义版本**：之前改了合成逻辑但 key 没变，
     # 旧缓存被直接命中 → 改了等于没改（用户反馈"重启了但是没用"）。
     key = json.dumps({"v": _COMPOSE_VERSION, "e": resolved, "p": pose, "f": flip,
-                      "fr": frame, "ear": ear_type}, sort_keys=True)
+                      "fr": frame, "ear": ear_type, "chair": chair_id}, sort_keys=True)
     os.makedirs(OUT_DIR, exist_ok=True)
     # `_noCache`：验收脚本要「同输入、不同渲染器状态」各出一张图，
     # 而缓存 key 只含输入参数，会命中同一张 → 必须能显式跳过缓存。
@@ -946,6 +1092,8 @@ def cmd_char_render(args: Dict[str, Any]) -> Dict[str, Any]:
         _uh = max(im.height for im in _imgs)
         img = Image.new("RGBA", (_uw, _uh), (0, 0, 0, 0))
         img.alpha_composite(_imgs[_want].convert("RGBA"), (0, 0))
+    if chair_id:
+        img = _apply_chair(img, resolved, pose, flip, chair_id)
     if img.width <= 1 and img.height <= 1:
         raise ValueError(
             f"合成结果为空（{len(equips)} 个编号都没落上）。检查编号是否存在于 "
@@ -1908,29 +2056,48 @@ def _is_town(row: Dict[str, str]) -> bool:
 
 
 def cmd_map_random(args: Dict[str, Any]) -> Dict[str, Any]:
-    """随机挑一张**有中文名且能渲染**的地图（背景「随机换一张」用）。"""
+    """随机挑一张**有中文名且能渲染**的地图（背景「随机换一张」用）。
+
+    **最近用过的必须真排除**：`exclude` 由前端传「最近 N 张」（用户要求最近 20 次不重复）。
+    这里有个坑：精选池只有十几张，光在精选池里抽、只排除几项，就会反复出现同样几张
+    （用户反馈「随机有很错觉经常是重复几个」）。所以精选池抽不出时**自动放宽到全量名录**
+    （实测 21366 张有中文名），保证「最近 20 张不重复」这条硬约束能满足。
+    """
     import random as _random
     mr = map_renderer()
     exclude = {str(x) for x in (args.get("exclude") or [])}
     prefer = str(args.get("prefer") or "").strip().lower()
-    if prefer:
-        pool = _filter_named_maps(prefer)
-    elif args.get("featured"):
-        pool = cmd_map_featured({})["maps"]
-    else:
-        pool = map_name_index()
-    pool = [r for r in pool if r["id"] not in exclude]
-    _random.shuffle(pool)
-    tried = 0
-    for r in pool[:200]:
-        tried += 1
-        try:
-            if not mr.has_map(r["id"]):
+
+    def build(featured_only: bool):
+        if prefer:
+            return _filter_named_maps(prefer)
+        if featured_only and args.get("featured"):
+            return cmd_map_featured({})["maps"]
+        return map_name_index()
+
+    def draw(pool):
+        cand = [r for r in pool if r["id"] not in exclude]
+        _random.shuffle(cand)
+        tried = 0
+        for r in cand[:200]:
+            tried += 1
+            try:
+                if not mr.has_map(r["id"]):
+                    continue
+            except Exception:  # noqa: BLE001
                 continue
-        except Exception:  # noqa: BLE001
-            continue
-        return {"id": r["id"], "name": r["name"], "street": r["street"], "tried": tried}
-    raise RuntimeError(f"没抽到可用地图（试了 {tried} 张）")
+            return {"id": r["id"], "name": r["name"], "street": r["street"], "tried": tried}
+        return None
+
+    # 先按用户选择（精选优先），抽不出来就放宽到全量
+    hit = draw(build(featured_only=True))
+    if hit is None and not prefer and args.get("featured"):
+        hit = draw(build(featured_only=False))
+        if hit is not None:
+            hit["relaxed"] = True
+    if hit is None:
+        raise RuntimeError(f"没抽到可用地图（已排除最近 {len(exclude)} 张）")
+    return hit
 
 
 def cmd_map_next(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2429,6 +2596,7 @@ COMMANDS = {
     "get": cmd_get, "frames": cmd_frames, "sprite": cmd_sprite,
     "image": cmd_image, "stats": cmd_stats,
     "detail": cmd_detail, "detail_page": cmd_detail_page, "sources": cmd_sources,
+    "chair_list": cmd_chair_list,
     "map_list": cmd_map_list, "map_random": cmd_map_random, "map_featured": cmd_map_featured,
     "map_next": cmd_map_next,
     "map_detail": cmd_map_detail, "map_image": cmd_map_image, "map_canvas": cmd_map_canvas,

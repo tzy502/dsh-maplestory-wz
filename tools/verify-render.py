@@ -139,7 +139,9 @@ import pet_worker as P                                                      # no
 
 cfg = json.load(open(os.path.expanduser("~/.dsh/wz-assets/background.json")))
 doll = cfg.get("doll") or {}
-equips = [v for v in (doll.get("equips") or {}).values() if v]
+_eq = doll.get("equips") or {}
+# equips 历史上两种形状都出现过（对象=按部位名、数组=按顺序），都兼容
+equips = [v for v in (_eq.values() if isinstance(_eq, dict) else _eq) if v]
 ear = doll.get("earType", "humanEar")
 
 resolved = DS.resolve_face_equips(equips)

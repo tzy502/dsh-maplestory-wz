@@ -19,7 +19,8 @@ window.__ModuleLoader__.load({
     } catch {
       createPortal = null;
     }
-    const { useState, useEffect, useMemo, useCallback } = React;
+    // useRef 之前没解构：新加的换图过渡用它记「上一张图」
+    const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
     const PANEL_ID = 'maplestory-wz';
     const API = '/dsh-maplestory-wz/api';
@@ -166,6 +167,33 @@ window.__ModuleLoader__.load({
       const [t, setT] = useState(0);
       const rafRef = React.useRef(0);
       const lastRef = React.useRef(0);
+
+      // ── 换图过渡（交叉淡入）──
+      // **必须放在这里**（所有 hooks 都在早返回 `if (!config?.enabled) return null` 之前）：
+      // 之前加在早返回之后，禁用背景时 hook 数量变化 → React error #310
+      // 「Rendered more hooks than during the previous render」，整个 shell.overlay 崩掉（实测）。
+      // 几何值（drawW/originPx…）在下面才算得出来，所以用 ref 承载：
+      // 等渲染时把本帧的值写进 ref，再由 effect 在换图时取上一张的快照。
+      const prevUrlRef = React.useRef(null);
+      const prevMetaRef = React.useRef(null);
+      const curMetaRef = React.useRef(null);
+      const [fade, setFade] = useState(null);
+      const mapFadeMs = Math.max(0, Number(config?.mapFadeMs ?? 1200));
+      useEffect(() => {
+        const meta = curMetaRef.current;
+        if (!meta) return;
+        const prev = prevUrlRef.current;
+        if (prev && prev !== meta.url && mapFadeMs > 0) {
+          setFade({ ...meta, from: prevMetaRef.current, key: Date.now() });
+        }
+        prevUrlRef.current = meta.url;
+        prevMetaRef.current = meta;
+      }, [config?.mapId, mapFadeMs]);
+      useEffect(() => {
+        if (!fade) return undefined;
+        const t = setTimeout(() => setFade(null), mapFadeMs + 80);
+        return () => clearTimeout(t);
+      }, [fade, mapFadeMs]);
 
       useEffect(() => {
         const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
@@ -320,6 +348,11 @@ window.__ModuleLoader__.load({
       const originPy = -(camY - content.top) * zoom + halfH;
       const drawW = map.w * (zoom / imgScale);
       const drawH = map.h * (zoom / imgScale);
+      // 交给上面的过渡 effect：换图时它取上一张的快照做交叉淡入
+      curMetaRef.current = {
+        url: map.url, w: drawW, h: drawH, x: originPx, y: originPy,
+        sat: config?.saturate ?? 0.92, bri: config?.brightness ?? 0.9,
+      };
 
       // 把地图画到 **html 元素的固定背景** 上。
       // 实测教训：画到 .frame 上没用——内容区里有不透明的后代把整个 frame 背景盖住
@@ -369,7 +402,7 @@ window.__ModuleLoader__.load({
           st.busy = true;
           if (atRight || (hitEdge && st.lastK > 0.9)) st.firedRight = true;
           if (atLeft || (hitEdge && st.lastK < 0.1)) st.firedLeft = true;
-          const recent = [...(config?.recent || []), config.mapId].slice(-8);
+          const recent = [...(config?.recent || []), config.mapId].slice(-20);
           setTimeout(() => {
             callApi('mapNext', { exclude: recent })
               .then((d) => {
@@ -379,7 +412,7 @@ window.__ModuleLoader__.load({
                 st.firedRight = false;
               })
               .catch(() => { st.busy = false; });
-          }, Number(config?.switchDelayMs ?? 5000));
+          }, Number(config?.switchDelayMs ?? 12000));
         }
         // 离开端点后允许再次触发（下一趟）
         if (k < 0.9 && k > 0.1) { st.firedLeft = false; st.firedRight = false; }
@@ -396,7 +429,22 @@ window.__ModuleLoader__.load({
           overflow: 'hidden', background: 'transparent',
         },
       },
+        // 过渡期间的「旧图」：垫在新图下面，等新图淡完就被丢弃
+        fade && fade.from
+          ? el('div', {
+              key: `fade-prev-${fade.key}`,
+              style: {
+                position: 'absolute', inset: 0,
+                backgroundImage: `url("${fade.from.url}")`,
+                backgroundRepeat: 'no-repeat',
+                backgroundSize: `${fade.from.w}px ${fade.from.h}px`,
+                backgroundPosition: `${fade.from.x}px ${fade.from.y}px`,
+                filter: `saturate(${fade.from.sat}) brightness(${fade.from.bri})`,
+              },
+            })
+          : null,
         el('div', {
+          key: fade ? `fade-cur-${fade.key}` : 'map-cur',
           style: {
             position: 'absolute', inset: 0,
             // 固定视口相机：整幅地图画布按 (world-cam)*zoom+half 定位
@@ -405,6 +453,10 @@ window.__ModuleLoader__.load({
             backgroundSize: `${drawW}px ${drawH}px`,
             backgroundPosition: `${originPx}px ${originPy}px`,
             filter: `saturate(${config.saturate ?? 0.92}) brightness(${config.brightness ?? 0.9})`,
+            // 只在过渡期间挂动画；动画结束（fade=null）时这一层就是普通地图层。
+            // key 随 fade 变化 → 重新挂载 → keyframes 从头播，不会因为复用节点而不播。
+            opacity: fade ? 0 : 1,
+            animation: fade ? `msWzMapIn ${mapFadeMs}ms ease-in-out forwards` : undefined,
           },
         }),
         el('div', {
@@ -932,6 +984,8 @@ window.__ModuleLoader__.load({
     const CHAR_SLOTS = [
       ['Body', '身体'], ['Head', '头'], ['Hair', '发型'], ['Face', '脸'],
       ['Cap', '帽子'], ['Coat', '上衣'], ['Longcoat', '套服'], ['Pants', '裤子'],
+      // 椅子不是 Character 部件（在 Item/Install），渲染走 chair_support；放最后一行因为不常改
+      ['Chair', '椅子'],
       ['Shoes', '鞋'], ['Glove', '手套'], ['Cape', '披风'], ['Shield', '盾'],
       ['FaceAcc', '脸饰'], ['Glass', '眼镜'], ['Earring', '耳环'], ['Weapon', '武器'],
     ];
@@ -939,6 +993,7 @@ window.__ModuleLoader__.load({
       Body: '00002000', Head: '00012000', Hair: '00030000', Face: '00020000',
       Cap: '', Coat: '', Longcoat: '', Pants: '', Shoes: '', Glove: '',
       Cape: '', Shield: '', FaceAcc: '', Glass: '', Earring: '', Weapon: '',
+      Chair: '',
     };
 
     function PaperDoll() {
@@ -967,6 +1022,8 @@ window.__ModuleLoader__.load({
       // `ReferenceError: earType is not defined`，整个面板崩成空白。
       const [earType, setEarType] = useState('humanEar');
       const [earTypes, setEarTypes] = useState(['humanEar']);
+      // 椅子清单（2500 把，来自 Item/Install + String/Ins.img）—— 只在展开「椅子」时才拉
+      const [chairs, setChairs] = useState([]);
 
       // 纸娃娃配置持久化：打开面板恢复上次的样子（部位 + 耳型 + 姿势 + 翻转）。
       useEffect(() => {
@@ -1026,13 +1083,28 @@ window.__ModuleLoader__.load({
       const render = useCallback(() => {
         const list = CHAR_SLOTS.map(([k]) => equips[k]).filter(Boolean);
         setBusy(true); setErr(null);
-        callApi('charRender', { equips: list, pose, flip })
+        // 椅子单独传（它不是 Character 部件，混进 equips 会让 wzpy 找不到而整只渲染失败）
+        callApi('charRender', { equips: list, pose, flip, chairId: equips.Chair || '' })
           .then(setImg)
           .catch((e) => setErr(String(e.message)))
           .finally(() => setBusy(false));
       }, [equips, pose, flip, earType]);
 
       useEffect(() => { render(); }, [render]);
+
+      // 展开「椅子」时才去拉清单（2500 把，启动就拉会拖慢面板）。
+      // **关键词变化必须重新拉**：椅子的搜索是服务端做的（`chairList {query}`），
+      // 本地只筛 `parts` 里没有 Chair 这一类 → 不重拉就永远搜不到（实测搜「花田」无结果）。
+      useEffect(() => {
+        if (openSlot !== 'Chair') return undefined;
+        let alive = true;
+        const timer = setTimeout(() => {
+          callApi('chairList', { query: q || '', limit: 300 })
+            .then((d) => { if (alive) setChairs(d.chairs || []); })
+            .catch(() => {});
+        }, q ? 250 : 0);
+        return () => { alive = false; clearTimeout(timer); };
+      }, [openSlot, q]);
 
       // 头型变了就重新取可用耳型；取不到就退回 humanEar
       useEffect(() => {
@@ -1181,7 +1253,8 @@ window.__ModuleLoader__.load({
               : null),
           el('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
             CHAR_SLOTS.map(([slot, label]) => {
-              const all = parts[slot]?.items || [];
+              // 椅子不在 Character 部件表里（它来自 Item/Install），候选单独一个来源
+              const all = slot === 'Chair' ? chairs : (parts[slot]?.items || []);
               const localHits = q
                 ? all.filter((it) => it.id.includes(q) || String(it.name || '').includes(q))
                 : [];
@@ -1193,7 +1266,7 @@ window.__ModuleLoader__.load({
                 : [];
               const list = q
                 ? [...localHits, ...srvHits]
-                : (openSlot === slot ? all.slice(0, 120) : []);
+                : (openSlot === slot ? all.slice(0, 200) : []);
               return el('div', { key: slot, style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
                 el('span', { style: { ...S.kvKey, minWidth: 44 } }, label),
                 el('span', {
@@ -1201,7 +1274,9 @@ window.__ModuleLoader__.load({
                   title: '点一下展开/收起该部位的列表',
                   onClick: () => setOpenSlot(openSlot === slot ? null : slot),
                 }, equips[slot] ? `${equips[slot]}${nameOf(slot, equips[slot]) ? ` ${nameOf(slot, equips[slot])}` : ''}` : '（无）'),
-                parts[slot]
+                slot === 'Chair'
+                  ? el('span', { style: { fontSize: 11, color: T.dim } }, `共 ${chairs.length || '…'} 把`)
+                  : parts[slot]
                   ? el('span', { style: { fontSize: 11, color: T.dim } },
                       q ? `命中 ${list.length}/${parts[slot].total}` : `共 ${parts[slot].total}`)
                   : null,
@@ -1433,7 +1508,8 @@ window.__ModuleLoader__.load({
             featured: config?.featured !== false,
             exclude: config?.recent || [],
           });
-          const recent = [d.id, ...(config?.recent || [])].slice(0, 6);
+          // 最近 20 张都记着（用户要求「最近二十次随机的地图完全不能重复」）
+          const recent = [d.id, ...(config?.recent || [])].slice(0, 20);
           patch({ mapId: d.id, mapName: d.name, enabled: true, recent });
           setMsg(`已换到「${d.name}」（${d.street || '—'}）`);
         } catch (e) {
@@ -1505,10 +1581,20 @@ window.__ModuleLoader__.load({
             el('label', { style: { fontSize: 12, color: T.dim, display: 'flex', gap: 6, alignItems: 'center' } },
               '到头后停顿',
               el('select', {
-                style: S.select, value: String(config.switchDelayMs ?? 5000),
+                style: S.select, value: String(config.switchDelayMs ?? 12000),
                 onChange: (e) => patch({ switchDelayMs: Number(e.target.value) }),
-              }, [1000, 3000, 5000, 10000, 20000, 60000].map((v) => el('option', { key: v, value: v },
+              }, [1000, 3000, 5000, 8000, 12000, 20000, 30000, 60000].map((v) => el('option', { key: v, value: v },
                 v < 60000 ? `${v / 1000} 秒` : '1 分钟')))),
+            el('label', {
+              style: { fontSize: 12, color: T.dim, display: 'flex', gap: 6, alignItems: 'center' },
+              title: '换图时的交叉淡入时长；选「关」就是硬切',
+            },
+              '换图过渡',
+              el('select', {
+                style: S.select, value: String(config.mapFadeMs ?? 1200),
+                onChange: (e) => patch({ mapFadeMs: Number(e.target.value) }),
+              }, [0, 400, 800, 1200, 2000, 3000].map((v) => el('option', { key: v, value: v },
+                v === 0 ? '关' : `${(v / 1000).toFixed(1)} 秒`)))),
             el('label', { style: { fontSize: 12, color: T.dim, display: 'flex', gap: 6, alignItems: 'center' } },
               '自动轮换',
               el('select', {
@@ -1945,6 +2031,8 @@ window.__ModuleLoader__.load({
       '  border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25)) !important;',
       '  border-radius: 8px;',
       '}',
+      /* 换图交叉淡入：新图从透明淡到不透明，旧图垫在下面 */
+      '@keyframes msWzMapIn { from { opacity: 0; } to { opacity: 1; } }',
       /* 背景层浮层（暴露 toScreen 用）不吃事件 */
       '[data-ms-wz-bg-host] > [data-ms-wz-bg-layer] { pointer-events: none !important; }',
     ].join('\n');
@@ -2041,7 +2129,25 @@ window.__ModuleLoader__.load({
     }
 
     /** 播放动作（AnimService.Play）：重置帧号与累积延迟，按动作定义决定 Loop/OneShot。 */
-    function play(st, anims, name, delayScale) {
+    /**
+     * 切动作。
+     *
+     * `forceSit`：坐着的时候**只允许 sit**。三处「走完一段 → 回站姿」都没守椅子，
+     * 结果桌宠会在 sit 与 stand1 之间来回切（实测两个动作交替出现）。
+     * 注意 play 定义在组件**外面**，拿不到组件内的 sittingRef，所以由调用方传进来。
+     */
+    /**
+     * 「当前是否坐着」的模块级标记。
+     *
+     * play() 定义在 DesktopPet **外面**，拿不到组件里的 sittingRef；
+     * 而调用点有十几处（拖拽/点击/悬浮/走完一段…），逐个加参数必漏。
+     * 所以用一个模块级变量：组件在 sitting 变化时写它，play 统一读它。
+     */
+    let PET_SITTING = false;
+
+    function play(st, anims, name, delayScale, forceSit) {
+      // 坐着就只允许 sit（forceSit 显式覆盖，供「起身」用）
+      if ((forceSit === undefined ? PET_SITTING : forceSit) && realAction(anims, 'sit')) name = 'sit';
       const key = resolveAction(anims, name);
       if (!key) return;
       const def = ACTION_DEFS[key];
@@ -2178,6 +2284,11 @@ window.__ModuleLoader__.load({
       const walkRef = useRef(null);
       // 地图行走总开关：**默认关**（用户口径：桌宠不用跟着地图走，随意走）。
       // foothold 那套代码保留着，想开就把下面改成 true。
+      // 是否坐了椅子：坐椅子就不该再自己走动（用户口径：「上了椅子以后就不用动了」）。
+      // 数据来源与纸娃娃面板同一份配置（background.json 的 doll.chair），
+      // 面板一改这边跟着变，不设第二份。
+      const [sitting, setSitting] = useState(false);
+      const sittingRef = useRef(false);
       const [walkOn, setWalkOn] = useState(false);
       const [walkInfo, setWalkInfo] = useState(null);
       const [walkState, setWalkState] = useState('初始化');
@@ -2270,6 +2381,44 @@ window.__ModuleLoader__.load({
           .finally(() => setBusy(false));
       }, []);
 
+      useEffect(() => {
+        let alive = true;
+        const read = () => {
+          callApi('backgroundGet', {})
+            .then((c) => {
+              const on = !!(c && c.doll && c.doll.chair);
+              if (!alive) return;
+              const was = sittingRef.current;
+              sittingRef.current = on;
+              PET_SITTING = on;      // 让 play() 也能看到（它在组件外）
+              setSitting(on);
+              // **起身（坐 → 不坐）时立刻把 idleRemaining 复位**：
+              // 坐着期间它被续期成 60000，若不复位就要再等 60 秒才肯走动，
+              // 表现为「清空椅子后宠物永远不动」（实测踩到过）。
+              const st = stRef.current;
+              const D = (dataRef.current && dataRef.current.defaults) || {};
+              if (st) {
+                if (on) {
+                  // 坐下：切坐姿并停住（坐姿只有 1 帧，天然静止）
+                  play(st, dataRef.current.anims, 'sit', st.delayScale, true);
+                  st.mode = 'idle';
+                  st.idleRemaining = 60000;
+                } else if (was && !on && st.mode === 'idle') {
+                  // 起身：回到站姿，并把 idleRemaining 复位 ——
+                  // 坐着期间它被续期成 60000，不复位就要再等 60 秒才肯走动，
+                  // 表现为「清空椅子后宠物永远不动」（实测踩到过）。
+                  play(st, dataRef.current.anims, 'stand', st.delayScale, false);
+                  st.idleRemaining = rand(D.idleMinMs ?? 900, D.idleMaxMs ?? 2800);
+                }
+              }
+            })
+            .catch(() => {});
+        };
+        read();
+        const t = setInterval(read, 2000);
+        return () => { alive = false; clearInterval(t); };
+      }, []);
+
       // 地图行走已关闭（walkOn=false），不再去拉 foothold，省掉一轮请求。
       useEffect(() => {
         setWalkState(walkOn ? '准备中' : 'off:随意走');
@@ -2325,7 +2474,8 @@ window.__ModuleLoader__.load({
           leg: 0,
           delayScale: data.defaults.delayScale || 1,
         };
-        play(st, data.anims, 'stand', st.delayScale);
+        // 坐椅子就**直接进坐姿**（否则先站一下再切，看着像"点了没反应"）
+        play(st, data.anims, 'stand', st.delayScale, sittingRef.current);
         stRef.current = st;
       }, [data, viewport]);
 
@@ -2463,7 +2613,7 @@ window.__ModuleLoader__.load({
                 if (st.leg <= 0) {
                   st.mode = 'idle';
                   st.idleRemaining = rand(D.idleMinMs, D.idleMaxMs);
-                  play(st, anims, 'stand', D.delayScale);
+                  play(st, anims, 'stand', D.delayScale, sittingRef.current);
                 }
                 // 世界坐标 → 屏幕。注意渲染时 top = snap.y - anchor.y（按脚底对齐），
                 // 所以这里要把「脚底的屏幕 y」换算成**左上角**：直接给 y + cell.h。
@@ -2488,7 +2638,10 @@ window.__ModuleLoader__.load({
                 st.y = Math.min(Math.max(st.y, 8), Math.max(8, view.h - sh.cell.h * cellK - 8));
               } else if (st.mode === 'idle') {
                 st.idleRemaining -= dt;
-                if (st.idleRemaining <= 0) { st.mode = 'walk'; play(st, anims, 'move', D.delayScale); }
+                // 坐椅子期间**不启动走动**（也不起飞）：只把 idleRemaining 续期，
+                // 让它一直停在原地。起身（清空椅子）后自动恢复原来的行为。
+                if (sittingRef.current) st.idleRemaining = 60000;
+                else if (st.idleRemaining <= 0) { st.mode = 'walk'; play(st, anims, 'move', D.delayScale); }
               }
               // 地平线跑出视口就夹回来，别让宠物消失
               if (st.y > view.h - 2) st.y = view.h - 2;
@@ -2521,7 +2674,7 @@ window.__ModuleLoader__.load({
             } else if (st.leg <= 0) {
               st.mode = 'idle';
               st.idleRemaining = rand(D.idleMinMs, D.idleMaxMs);
-              play(st, anims, 'stand', D.delayScale);
+              play(st, anims, 'stand', D.delayScale, sittingRef.current);
             }
           } else if (st.mode === 'fly') {
             // 飞行：**竖直 + 水平漂移**，时间到**就地**落下。
@@ -2542,11 +2695,12 @@ window.__ModuleLoader__.load({
               st.landedY = st.y;
               st.mode = 'idle';
               st.idleRemaining = rand(D.idleMinMs, D.idleMaxMs);
-              play(st, anims, 'stand', D.delayScale);
+              play(st, anims, 'stand', D.delayScale, sittingRef.current);
             }
           } else if (st.mode === 'idle') {
             st.idleRemaining -= dt;
-            if (st.idleRemaining <= 0) startWalk(st);
+            if (sittingRef.current) st.idleRemaining = 60000;
+            else if (st.idleRemaining <= 0) startWalk(st);
           }
           // 所有模式统一夹一次：y 不能跑出视口
           // （实测：飞行 + 地图模式下会飞到 y=-87，宠物直接消失/抖动）。
@@ -2593,7 +2747,8 @@ window.__ModuleLoader__.load({
         if (!st || !d) return;
         if (st.mode === 'drag' || st.mode === 'react' || st.mode === 'fly') return;
         st.hoverHold = true;
-        play(st, d.anims, 'stand', d.defaults.delayScale);
+        // 坐着的时候悬浮不该站起来（否则鼠标停在宠物上就一直在 sit/stand 之间翻）
+        play(st, d.anims, 'stand', d.defaults.delayScale, sittingRef.current);
       }, []);
       const onPetLeave = useCallback(() => {
         const st = stRef.current;

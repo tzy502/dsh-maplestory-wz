@@ -678,6 +678,59 @@ def _effect_lookup():
 _EFFECT_LOOKUP: Any = None
 
 
+def _eq_for(equips):
+    return doll_shared.resolve_face_equips(equips) if doll_shared is not None else equips
+
+
+def _apply_chair_frames(imgs, chair_id: str, eq_, pose: str, flip: bool):
+    """把椅子叠到坐姿的每一帧上（每帧各自算 navel，避免帧间漂移）。"""
+    try:
+        import chair_support
+    except Exception:  # noqa: BLE001
+        return imgs
+    try:
+        item_root = root_for("Item")
+
+        class _Acc:
+            def __call__(self, root, path):
+                return _parsed_image(root, path)
+
+            def canvas_meta(self, frame, root):
+                return _canvas_meta(frame, root, None, "Item")
+
+        chair = chair_support.render_chair_pieces(
+            item_root, _Acc(), decode_canvas, REGION, chair_id)
+    except Exception as exc:  # noqa: BLE001
+        log(f"椅子 {chair_id} 读取失败：{exc}")
+        return imgs
+    if not chair:
+        log(f"椅子 {chair_id} 不存在")
+        return imgs
+
+    out = []
+    for fi, im in enumerate(imgs):
+        navel = None
+        try:
+            pls, _a = cr._build_placements(
+                eq_, pose=pose, frame=fi, ear_type=None,
+                hide_hair_full=False, hide_hair_set=frozenset(),
+                cap_vslot_tokens=frozenset(), return_anchors=True)
+            tops = [p.top_left for p in pls if p.top_left is not None]
+            if tops:
+                navel = (-min(t[0] for t in tops), -min(t[1] for t in tops))
+        except Exception:  # noqa: BLE001
+            navel = None
+        if navel is None:
+            navel = (im.width // 2, im.height)
+        try:
+            out.append(chair_support.compose_with_chair(
+                im.convert("RGBA"), navel, chair, chair_id, frame_index=0,
+                has_sit_action=True))
+        except Exception:  # noqa: BLE001
+            out.append(im)
+    return out
+
+
 def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
     """纸娃娃桌宠：逐帧合成各语义动作的雪碧图，返回与怪物同样的 anims 结构。"""
     import time as _t
@@ -688,6 +741,9 @@ def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
     # 耳型与纸娃娃面板共用同一套取值（humanEar/ear/lefEar/highlefEar）。
     # 头型不支持这个耳型时自动退回 humanEar，避免整只桌宠渲染失败。
     ear_type = str(args.get("earType") or args.get("ear_type") or "").strip() or "humanEar"
+    # 椅子（可选）：挂了椅子就自动改坐姿，并给雪碧图叠上椅子层。
+    # 坐姿只有 1 帧，所以桌宠会「坐着不动」——正好符合「上了椅子就不用动了」。
+    chair_id = str(args.get("chairId") or args.get("chair") or "").strip()
     try:
         head = next((e for e in equips if str(e).lstrip("0").startswith("120")), None)
         if head:
@@ -762,6 +818,10 @@ def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
         # 与面板同一套：脸型 / 101 表情互斥（resolve_face_equips），不叠不擦。
         _eq = doll_shared.resolve_face_equips(equips) if doll_shared is not None else equips
         imgs, delays, _steps = _compose(real)
+        # 挂了椅子：坐姿 + 叠椅子层（与纸娃娃面板同一个 compose_with_chair）。
+        # 「sit」只有 1 帧，所以坐姿雪碧图天然就是静止的。
+        if chair_id and imgs and real == "sit":
+            imgs = _apply_chair_frames(imgs, chair_id, eq_=_eq_for(equips), pose="sit", flip=flip)
         staged[str(w)] = (real, imgs, delays)
     # ── 排版（第二遍）────────────────────────────────────────────────
     # 依据 wzpy `compose_animation` 的**承诺**（源码注释原文）：
