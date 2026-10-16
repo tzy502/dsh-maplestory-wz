@@ -731,10 +731,25 @@ export function apply(ctx, rawConfig = {}) {
             .find((cand) => existsSync(cand));
           if (!full) return jsonBody(res, 404, { error: '文件不存在', name });
           const bytes = await readFile(full);
+          const etag = `W/"${bytes.length.toString(16)}-${createHash('sha1').update(bytes).digest('hex').slice(0, 12)}"`;
+          // 带上 ETag 回源校验时，内容没变就 304 —— 否则 2MB 的怪物雪碧图
+          // 每次轮询都要重传一遍（桌宠每秒都在换帧，但不换文件）
+          if (req.headers['if-none-match'] === etag) {
+            res.writeHead(304, { etag, 'cache-control': 'no-cache' });
+            res.end();
+            return;
+          }
           res.writeHead(200, {
             'content-type': MIME[extname(name).toLowerCase()] ?? 'application/octet-stream',
             'content-length': bytes.length,
-            'cache-control': 'public, max-age=86400, immutable',
+            // **不要 immutable**：这些文件名是按「部位 + 动作 + 版本」生成的，
+            // 内容一变（改了合成逻辑、换了椅子帧数）文件名可能不变，而
+            // `immutable` + `max-age=86400` 会让浏览器 24 小时不再回源 ——
+            // 表现就是「明明改了、刷新了还是旧的/空白」（用户反馈过）。
+            // 用 no-cache：仍然允许缓存，但每次都会带 ETag 回源校验，
+            // 内容没变就 304（省流量），变了就拿新的。
+            'cache-control': 'no-cache',
+            etag,
           });
           res.end(bytes);
         },

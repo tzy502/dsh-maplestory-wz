@@ -906,7 +906,10 @@ def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
             png = os.path.join(OUT_DIR, f"{stem}.png")
             sheet.save(png)
             out_anims[str(w)] = {
-                "file": png, "action": real, "count": len(imgs),
+                # **必须是文件名，不能是路径**：host 用 `encodeURIComponent(file)` 拼
+                # `/file/<name>`，塞绝对路径进去会变成 `/file/%2FUsers%2F...` → 404
+                # → 桌宠的贴图全部加载失败、页面上一片空白（用户反馈「点击应用以后直接空了」）。
+                "file": os.path.basename(png), "action": real, "count": len(imgs),
                 "cell": {"w": step, "h": ch_},
                 "anchor": {"x": step // 2, "y": ch_},
                 "cols": len(imgs), "rows": 1,
