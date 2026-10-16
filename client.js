@@ -2062,8 +2062,27 @@ window.__ModuleLoader__.load({
           const recent = Date.now() - (window.__msWzPanelAt || 0) < 800;
           if (inDom || recent) root.setAttribute('data-ms-wz-panel', 'on');
           else root.removeAttribute('data-ms-wz-panel');
+          // ── 插件页 / 设置页：全实底白（用户口径：「指定如果是插件的时候默认也是全白底」）──
+          // 这类页面是列表 + 表单，透出地图会花得看不清；地图只在对话页有意义。
+          // 判定「不是对话页」用几个**行为特征**，不猜路由：
+          //   ① URL 含 plugins/settings/preferences/mcp/skills 等
+          //   ② 中栏里找不到对话输入框（textarea）但页面已渲染出内容
+          const path = (location.pathname + location.hash).toLowerCase();
+          // ① URL 带这些词就是插件/设置类页面
+          const byPath = /plugins|settings|preferences|\/mcp|market/.test(path);
+          // ② 结构特征：插件页有「添加插件」这类专属入口。
+          //    **不要**用「没有 textarea」反推 —— 新会话页本来就没有 textarea（还没开始输入），
+          //    那样会把新会话也判成插件页（实测踩到：`/` 路径下 solid=on）。
+          const byPluginUi = [...document.querySelectorAll('button')]
+            .some((b) => /添加插件|插件市场/.test(b.textContent || ''));
+          if (byPath || byPluginUi) root.setAttribute('data-ms-wz-solid', 'on');
+          else root.removeAttribute('data-ms-wz-solid');
         }, 250);
-        return () => { clearInterval(timer); root.removeAttribute('data-ms-wz-panel'); };
+        return () => {
+          clearInterval(timer);
+          root.removeAttribute('data-ms-wz-panel');
+          root.removeAttribute('data-ms-wz-solid');
+        };
       }, [enabled]);
 
       let body = null;
@@ -2122,6 +2141,21 @@ window.__ModuleLoader__.load({
       '}',
       /* 侧栏：白底（用户明确要求过两次，别再改成磨砂） */
       'html[data-ms-wz-bg="on"] [class*="sidebarCol"] {',
+      '  background-color: var(--dsw-alias-bg-base) !important;',
+      '  backdrop-filter: none !important;',
+      '  -webkit-backdrop-filter: none !important;',
+      '}',
+      /* ── 插件页 / 设置页：**全实底白**，不给地图透出来 ────────────────
+         用户口径：「指定如果是插件的时候默认也是全白底」。
+         这类页面是列表 + 表单（插件列表、设置），透出地图会花得看不清；
+         而地图背景只在对话页有意义。所以由 JS 按当前路由打 `data-ms-wz-solid`，
+         这里把中栏/右栏/顶栏/正文流全部拉回和侧栏一样的实底，并关掉模糊。 */
+      'html[data-ms-wz-bg="on"][data-ms-wz-solid="on"] [class*="header"],',
+      'html[data-ms-wz-bg="on"][data-ms-wz-solid="on"] [class*="scrollBody"],',
+      'html[data-ms-wz-bg="on"][data-ms-wz-solid="on"] [class*="centerCol"],',
+      'html[data-ms-wz-bg="on"][data-ms-wz-solid="on"] [class*="rightbarCol"],',
+      'html[data-ms-wz-bg="on"][data-ms-wz-solid="on"] [class*="frame"],',
+      'html[data-ms-wz-bg="on"][data-ms-wz-solid="on"] [data-rightbar-col] {',
       '  background-color: var(--dsw-alias-bg-base) !important;',
       '  backdrop-filter: none !important;',
       '  -webkit-backdrop-filter: none !important;',
