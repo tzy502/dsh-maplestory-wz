@@ -1327,7 +1327,12 @@ export function apply(ctx, rawConfig = {}) {
   function dollEquips() {
     const d = loadDoll();
     if (!d?.equips) return null;
-    const list = Object.values(d.equips).filter((v) => typeof v === 'string' && v);
+    // **必须排除 Chair**：椅子不是 Character 部件（在 Item/Install/…），
+    // 它有独立字段 `doll.chair`。两者混在一个数组里会让 worker 拿椅子编号去
+    // Character 里找 → 整只渲染退化（实测格子从 241×192 掉到 68×71，椅子没了）。
+    const list = Object.entries(d.equips)
+      .filter(([k, v]) => k !== 'Chair' && typeof v === 'string' && v)
+      .map(([, v]) => v);
     return list.length ? list : null;
   }
 

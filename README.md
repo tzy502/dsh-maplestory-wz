@@ -1,287 +1,249 @@
-# 冒险岛 WZ 资源插件 + 桌宠
-
-把**本地冒险岛客户端**（WZ 数据，不联网、不要服务端）接进 DSH：
-Agent 能直接查和渲染游戏资源，Web 面板能浏览搜索，页面上还能养一只会走动的桌宠。
-
-素材全部现读 WZ 文件 —— **没有数据库、没有硬编码素材表**。
-
+---
+description: "Read a local MapleStory client's WZ data from DSH: browse and search the pack tree, look up mob/NPC/equipment properties and sprite animations, compose paper dolls with chairs, render chat balloons, and float a desktop pet over the Web UI."
+kind: "package-reference"
 ---
 
-## 这个插件解决什么
+# @local/dsh-maplestory-wz
 
-冒险岛的素材（怪物、NPC、装备、地图、UI）都封在 `.wz` 里：格式私有、分卷存放、
-还有一堆 `_outlink` 间接引用。想看点什么通常得开 WzComparerR2 那类专用工具，
-没法在写代码或聊天的地方顺手查。
+## Summary
 
-装上之后：
+Read the WZ files of a MapleStory client installed on this machine and use them from DSH,
+with no database, no network service, and no bundled artwork. The host half exposes twelve
+model-visible tools and one HTTP route; a Python worker keeps the WZ readers warm and
+renders PNG and GIF output into `~/.dsh/wz-assets/`. The Web half adds a six-tab panel
+(browse, search, catalog, paper doll, background, resources), replaces the page background
+with a scrolling game map, and floats a desktop pet above the UI.
 
-- **问一句就能查** —— Agent 直接调工具拿怪物属性、装备数值、技能图标、动作帧
-- **点一下就能看** —— 面板里翻分类树、搜中文名、看怪物/装备图鉴、播动作 GIF
-- **能拼出成品图** —— 纸娃娃（16 部位 + 2500 把椅子）、聊天气泡、地图背景
-- **能玩** —— 桌宠浮在页面上自己走、可拖拽、可换宠、能坐上椅子
+Rendering semantics are ported from `mapleStoryMiniPet` rather than invented: chat balloons
+follow `BalloonService.RenderBalloon`, chair layer order and offset follow
+`AddChairEffectPiece` and `ComputeChairEffectOffset`, paper-doll face exclusivity follows
+`AddExpressionPieces`, and the background camera follows `MapService.ClampCamera`.
+Acceptance is pixel-level rather than visual: `tools/verify-render.py` compares rendered
+output against C# reference images, and `tools/verify.sh` exercises 22 end-to-end API
+checks.
 
----
+Property availability is probed rather than assumed, because pack layout differs between
+publishers — on the client this was built against, only 3% of mob images carry an `info`
+node.
 
-## 能做到什么效果
+## Table of Contents
 
-| 效果 | 说明 |
-|---|---|
-| **查数据** | 怪物 · NPC · 装备 · 地图 · 技能 · 消耗品，按中文名/英文名/编号搜，带属性表 |
-| **看动作** | 任一实体的动作帧 → 按 `origin` 锚点对齐的精灵图 PNG，可选循环 GIF |
-| **图鉴** | 怪物 / NPC / 装备一页看完：图标 + 信息表 + 属性 + 全部动作 + 帧网格 |
-| **来源探测** | 一个编号的**全部候选来源**，标出「哪个有 info 属性 / 哪个只是图片仓库」 |
-| **纸娃娃** | 16 部位自由搭配实时合成；带 2500 把椅子（含花田这类场景椅，会连人一起坐上去） |
-| **聊天气泡** | 冒险岛 `UI/ChatBalloon.img` 九宫格气泡，489 种样式 |
-| **地图背景** | 游戏地图当网页背景，相机平滑横移，到头自动换图（最近 20 张不重复），换图带交叉淡入 |
-| **桌宠** | 页面上一只怪物或你自己的角色：走动、飞行、拖拽、点它有反应；**坐上椅子就不动了** |
-| **资源更新** | 面板里跑 cmsdl 更新本机冒险岛客户端（进度 + 日志） |
+- [Use this plugin](#use-this-plugin)
+- [Understand the implementation](#understand-the-implementation)
+- [Further Exploration](#further-exploration)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
 
----
+-----
 
-## 界面
+<a id="use-this-plugin"></a>
+## Use this plugin
 
-| 页签 | 用途 |
-|---|---|
-| **浏览** | 分类树 → 节点 → 图片/属性，像文件管理器一样翻 WZ |
-| **搜索** | 全库按中文名/编号搜，结果直接跳图鉴 |
-| **图鉴** | 怪物 / NPC / 装备的完整详情页 |
-| **纸娃娃** | 16 部位 + 椅子 + 姿势 + 耳型，实时预览，一键应用到桌宠 |
-| **背景** | 地图选择、清晰度、换图过渡、自动轮换 |
-| **资源** | cmsdl 更新客户端资源 |
+Link the repository into a DSH profile, point `dataDir` at the client's `Data` directory,
+and restart the host.
 
-**纸娃娃页细节**
-
-- **部位**：身体 · 头 · 发型 · 脸 · 帽子 · 上衣 · 套服 · 裤子 · 鞋 · 手套 · 披风 · 盾 · 脸饰 · 眼镜 · 耳环 · 武器
-- **椅子**：独立区块（2500 把，懒加载），有自己的搜索框 —— 椅子在 `Item/Install`，
-  不属于 Character 的 16 类
-- **全库搜索**：16 类一起筛；本地每类 400 条的窗口之外的命中由服务端补
-- **应用到桌宠**：点完**立刻生效**，不用刷新页面
-- 配置存在 `~/.dsh/wz-assets/background.json` 的 `doll`，纸娃娃页与桌宠**共用这一份**
-
-**地图背景细节**
-
-镜头按 `mapleStoryMiniPet` 的 `ClampCamera` 规则在边界内往返：
-`camX ∈ [MinX + halfW, MaxX − halfW]`，`halfW = viewW/(2*zoom)`；地图比视口窄时居中。
-
-几个必须知道的实现点（踩过的坑）：
-
-1. **画布用「内容边界」不是 VR 边界** —— VR 是给游戏相机用的，往往远大于画面
-   （射手村 `VRTop=-1100`，天空只画到约 593），直接用 VR 会留白带。
-2. **裁剪换算用实际渲染尺寸** —— 缩放会被压到上限，拿请求值换算会裁错区域。
-3. **要看见背景，布局三列得半透明** —— 面板开启时插入作用域 CSS
-   （`html[data-ms-wz-bg="on"]` + `color-mix` + 轻模糊）；背景层必须 `pointer-events: none`，
-   否则会吃掉点击。
-4. **不是所有地图都渲染得出来** —— 部分地图合成后几乎是空的；推荐射手村 `100000000`、
-   自由市场 `910000000`、魔法密林 `101000000`。
-
----
-
-## 装上以后
-
-**1. 链进 DSH profile**
+### Install and configure
 
 ```bash
 ln -s /Users/a502/IdeaProjects/dsh-maplestory-wz \
       ~/.dsh/profiles/web/node_modules/@local/dsh-maplestory-wz
 ```
 
-在 profile 的 `package.json` 里加这条依赖，然后重启 host（见文末「改代码后为什么不生效」）。
-
-**2. 配置数据源** —— 改 `cordis.patch.yml` 的 `config.dataDir`：
+Add the dependency to the profile's `package.json`, then set the data source in
+`cordis.patch.yml`:
 
 ```yaml
 - insert:
     - id: maplestory-wz
       name: '@local/dsh-maplestory-wz'
       config:
-        dataDir: /Volumes/SSD/mxd/mxd/Data   # ← 改成你的客户端 Data 目录
-        region: BMS                          # BMS / CMS / GMS / TMS …
+        dataDir: /Volumes/SSD/mxd/mxd/Data
+        region: BMS
         version: 228
 ```
 
-**3. 开始用**
-
-- **面板**：左侧栏点「冒险岛资源」
-- **Agent 工具**：直接说「查一下花蘑菇的属性」「把 1210102 的走路做成 GIF」
-- **桌宠**：默认浮在页面上，点它旁边的 ⚙ 换宠
-
----
-
-## Agent 工具
-
-| 工具 | 作用 |
-|---|---|
-| `wz_packs` | 有哪些分类与分卷 |
-| `wz_tree` | 浏览节点树（目录 / 图片 / 属性） |
-| `wz_search` | 按名字或编号搜 |
-| `wz_item` | 编号 → 名字 + 属性 + 图标 |
-| `wz_sources` | 一个编号的全部候选来源 + 主源判定 |
-| `wz_sprite` | 动作帧 → 精灵图 PNG（可选循环 GIF） |
-| `wz_map` | 地图名录 / 详情（VR 边界、层、物件、出生点、相机） |
-| `wz_map_sprite` | 地图整图或指定视口 → PNG |
-| `wz_char` | 纸娃娃：单帧 / 逐帧雪碧图 / 部件清单 / 姿势 |
-| `wz_balloon` | 聊天气泡（489 种样式） |
-| `wz_ms` | 读 `Data/Packs/*.ms`（动作→帧结构、是否 Spine） |
-
----
-
-## 配置项
-
-### `cordis.patch.yml` 的 `config`（改完要重启 host）
-
-| 键 | 默认 | 说明 |
+| Key | Default | Meaning |
 |---|---|---|
-| `dataDir` | — | WZ 数据目录（**必填**） |
-| `region` | `BMS` | 区域，影响字符串表与解码 |
-| `version` | `228` | 版本号 |
-| `wzpyPath` | 自动探测 | wz-python 克隆目录（含 `wzpy/`） |
-| `python` | 自动探测 | Python 解释器，需 Pillow + numpy |
-| `mobId` | `1210102` | 桌宠初始怪物 |
-| `originFallback` | `center` | 缺 `origin` 时的兜底锚点 |
-| `scale` | `1` | 桌宠缩放 |
-| `speed` | `100` | 走动速度 |
-| `flySpeed` | `60` | 飞行速度 |
-| `flyChance` | `0.35` | 起飞概率 |
+| `dataDir` | — | Client `Data` directory, required. |
+| `region` | `BMS` | Region; selects string tables and decryption keys. |
+| `version` | `228` | WZ version. |
+| `wzpyPath` | auto | Clone containing `wzpy/`. |
+| `python` | auto | Interpreter with Pillow and numpy. |
+| `mobId` | `1210102` | The pet's starting mob. |
+| `scale` `speed` `flySpeed` `flyChance` | `1` `100` `60` `0.35` | Pet sizing and motion. |
 
-Python 探测顺序：`config.python` → `$WZ_PYTHON` → `~/.hermes/cache/scratch/wz-env/bin/python`
-→ `/opt/homebrew/bin/python3` → `/usr/local/bin/python3` → `/usr/bin/python3`。
-worker 启动时会**清掉继承的 `PYTHONPATH`**（hermes 会把 3.14 的 site-packages 塞给 3.11
-解释器，导致 PIL 导入崩溃）。
+The interpreter is discovered in this order: `config.python`, `$WZ_PYTHON`,
+`~/.hermes/cache/scratch/wz-env/bin/python`, `/opt/homebrew/bin/python3`,
+`/usr/local/bin/python3`, `/usr/bin/python3`. The worker strips any inherited `PYTHONPATH`,
+because a foreign `site-packages` makes Pillow fail to import.
 
-### `~/.dsh/wz-assets/background.json`（面板里改，即时生效）
+### Ask the model for data
 
-| 组 | 键 |
+Twelve tools cover the read paths. Names and ids are both searchable, and property tables
+and animations come back ready to render.
+
+```text
+查一下花蘑菇的属性
+把 1210102 的走路做成 GIF
+100000000 这张地图的边界和出生点在哪
+```
+
+| Tool | Purpose |
 |---|---|
-| 地图背景 | `enabled` `mapId` `bgVisibility` `blur` `switchDelayMs` `mapFadeMs` `recent` `scrim` |
-| 纸娃娃 | `doll.equips` `doll.chair` `doll.pose` `doll.earType` `doll.flip` |
+| `wz_packs` | Available categories and their volume files. |
+| `wz_tree` | Walk the node tree — directories, images, properties. |
+| `wz_search` | Find by Chinese name, English name, or id. |
+| `wz_item` | Id to name, properties, and icon. |
+| `wz_sources` | Every candidate source for an id, with the primary one identified. |
+| `wz_sprite` | An action's frames to a sprite sheet, optionally a looping GIF. |
+| `wz_map` `wz_map_sprite` | Map list, map details, or a rendered map image. |
+| `wz_char` | Paper doll: one frame, a per-frame sheet, poses, or part lists. |
+| `wz_balloon` | Chat balloon in any of 489 styles. |
+| `wz_ms` | Structure inside `Data/Packs/*.ms` — action frames, Spine flag. |
 
-桌宠自己那份选择落 `~/.dsh/desktop-pet/pet-config.json`（`mode` / `mobId` / `equips`），
-刷新和重启都记得住。
+### Use the panel
 
----
+Six tabs sit behind the sidebar entry **冒险岛资源**.
 
-## 接口
+| Tab | Contents |
+|---|---|
+| **浏览** | Category tree down to images and properties. |
+| **搜索** | Whole-database name and id search; results jump to the catalog. |
+| **图鉴** | One page per mob, NPC, or equipment: icon, properties, every action, frame grid. |
+| **纸娃娃** | Sixteen equipment slots plus a chair block, pose, and ear type; applies to the pet in one click. |
+| **背景** | Map picker, clarity, transition duration, auto-rotation. |
+| **资源** | Runs cmsdl to update the local client, with progress and log. |
 
+The paper doll writes to `doll` in `~/.dsh/wz-assets/background.json`, which the panel and
+the pet both read, so a change applies in one place. Applying to the pet takes effect
+immediately: the panel signals the pet to refetch instead of requiring a page reload.
+
+### Use the pet
+
+A mob or your own character floats above the page, walks back and forth, flies
+occasionally, can be dragged, and reacts to clicks. A gear button opens a picker with
+quick-select chips for common mobs, the paper doll, and the last mob used.
+
+Equipping a chair switches the pet to the seated action and stops its walking entirely;
+clearing the chair restores both. A chair is not a character part — it lives in
+`Item/Install`, has its own search field in the panel, and is resolved by
+`py/chair_support.py`.
+
+## Understand the implementation
+
+Three layers are involved, and each has its own staleness rule.
+
+```text
+Web panel ──POST /dsh-maplestory-wz/api──┐
+                                         ├─► index.js ─► Python worker (wzpy reads WZ)
+Agent tools ─────────────────────────────┘                    │
+images ──GET /dsh-maplestory-wz/file/<name>── ~/.dsh/wz-assets/ ◄┘
 ```
-POST /dsh-maplestory-wz/api          {"cmd":"<命令>","args":{…}}
-GET  /dsh-maplestory-wz/file/<name>  渲染产物（PNG / GIF）
-GET  /dsh-maplestory-wz/image?path=…&animation=…&scale=…
-```
 
-命令：`packs` `tree` `search` `get` `sprite` `imageUrl` `stats` `detail` `sources`
-`charParts` `charPoses` `charAnim` `charRender` `charEars` `chairList`
-`balloon` `balloonStyles` `mapList` `mapFeatured` `mapRandom` `mapNext` `mapCanvas`
-`pet` `petGet` `petSet` `petSetChara` `petSetMob` `presets` `backgroundGet` `backgroundSet`
+`index.js` registers the tools and routes, pools the workers, and owns the pet config.
+`client.js` holds the panel, the background layer, and the pet overlay; `lib/client.js`
+mirrors it and must be kept in sync. The workers speak JSON lines over stdio and cache
+open data roots and parsed images.
 
-数据链路：
+### Reading WZ
 
-```
-Web 面板 ──POST /dsh-maplestory-wz/api──┐
-                                        ├─► Host 插件 index.js ─► Python worker（wzpy 读 WZ）
-Agent 工具 ─────────────────────────────┘                              │
-图片 <img> ──GET /dsh-maplestory-wz/file/<name>── ~/.dsh/wz-assets/ ◄──┘
-```
+A source is either the property-bearing image or a pure pixel store, and the two are easy
+to confuse:
 
----
-
-## info 与 `_Canvas` 的区别（关键）
-
-| 来源 | 是什么 | 该不该当信息源 |
+| Source | Contents | Role |
 |---|---|---|
-| `{type}/{id}.img` | **信息主源**：动作结构、`origin`/`delay`/`z`/`map`，PNG 只是 `_outlink` 指向 | ✅ 首选 |
-| `{type}/_Canvas/{id}.img` | **PNG 仓库**：像素数据；多数条目没有 `info` | ⚠️ 仅兜底 |
-| `info/link` | 同型号共用数据，指向另一个编号 | 跟随并标注 |
+| `{type}/{id}.img` | Actions, `origin`, `delay`, `z`, `map`; PNG via `_outlink` | Primary. |
+| `{type}/_Canvas/{id}.img` | Pixels; usually no `info` | Fallback only. |
+| `info/link` | Shared data for a model family | Followed and labelled. |
 
-实测本客户端（傲天 BMS 228）：
+`_outlink` and `_inlink` are resolved locally, because this client encodes `Weapon/` and
+`_Canvas/` as prefixes on the image name rather than as subdirectories, which defeats
+`resolve_canvas_link`. Sprite sheets are laid out by computing each frame's rectangle in
+anchor space, taking the union as the canvas, then pasting per cell; a missing `origin`
+falls back to the geometric centre.
 
-- `Mob/Mob.wz` 是 216 B 的**索引壳**，文件模式拿不到本体 img
-- 怪物图**只有** `Mob/_Canvas/_Canvas_000~005.wz`（4394 个 img）；随机抽 300 个，
-  只有 **3%** 带 `info`
-- 所以「这只怪有没有属性」不能假设 —— 跑 `wz_sources` 看探测结果
-- NPC / 装备正常：`Npc/{id}.img`、`Character/<类目>/{8 位补零}.img` 都有完整 `info`
+### Rendering semantics
 
-路径写法：
+Every rule below is ported from `mapleStoryMiniPet`, with the source method named:
 
-```
-Mob/_Canvas/1210102.img            怪物图（傲天把怪物图并进 _Canvas 分卷）
-Npc/0011000.img                    NPC（本体在 Npc_000.wz，图在 Npc/_Canvas）
-Character/Weapon/01332020.img      装备（8 位补零）；动作如 stand1 / swingO1
-Item/Install/03019.img             椅子（键如 03019632）
-UI/Basic.img                       UI 元件
-```
-
----
-
-## 渲染对齐
-
-气泡、纸娃娃、椅子、地图相机全部照 `mapleStoryMiniPet` 的 C# 实现逐条对齐，
-不自己发明规则。关键语义都有出处：
-
-| 项 | 依据 |
+| Behaviour | Source of truth |
 |---|---|
-| 气泡九宫格 | `BalloonService.RenderBalloon`：`n`/`s` 按 `colWidth` 平铺，`c` 平铺 `colWidth×colHeight`，`head` 贴顶行中，`arrow` 在底行开头；`canvas.Translate(-minL,-minT)` |
-| 脸型 / 101 表情 | `AddExpressionPieces`：两者是 `face` 图层的**互斥变体**，同时穿要丢掉脸型 |
-| ItemEff 特效 | `AddItemEffEffectPieces` → `Effect/ItemEff.img/{id}/effect/{frame}` |
-| 椅子层级 | `AddChairEffectPiece`：`z<=0` 在角色后、`z>0` 在角色前；层序 `OrderByDescending(ZIndex)` |
-| 椅子偏移 | `ComputeChairEffectOffset`：`锚 = navel − bodyRelMove`（花田椅 `bm=(47,-2)` → `(-47,+2)`） |
-| 坐姿动作 | `ResolveChairAction`：`info/sitAction` 优先，缺省 `sit` |
-| 地图相机 | `MapService.ClampCamera` |
+| Balloon 9-slice | `BalloonService.RenderBalloon` — `n`/`s` tiled by `colWidth`, `c` tiled across `colWidth×colHeight`, `head` on the top row, `arrow` first on the bottom row. |
+| Face and 101 expression | `AddExpressionPieces` — mutually exclusive variants of the `face` layer. |
+| ItemEff overlays | `AddItemEffEffectPieces` — `Effect/ItemEff.img/{id}/effect/{frame}`. |
+| Chair layers | `AddChairEffectPiece` — `z<=0` behind the character, `z>0` in front, ordered by descending `z`. |
+| Chair offset | `ComputeChairEffectOffset` — anchor is `navel − bodyRelMove`; for `3019632` that is `(47,−2)` to `(−47,+2)`. |
+| Seat action | `ResolveChairAction` — `info/sitAction`, defaulting to `sit`. |
+| Background camera | `MapService.ClampCamera` — `camX ∈ [MinX + halfW, MaxX − halfW]`, centred when the map is narrower than the viewport. |
 
-**不靠肉眼验收**：
+Two canvas details matter for the chair: the composite must be enlarged to hold the chair
+layers, because a chair anchors left of the navel and is larger than the character; and the
+navel's pixel position is read from `_build_placements(..., return_anchors=True)` rather
+than measured from the pixels.
 
-```bash
-python tools/verify-render.py     # 渲染像素级比对（气泡对 C# 基准图、纸娃娃与桌宠同源一致）
-bash tools/verify.sh              # 22 项全链路接口实测
-```
+### Background layer
 
----
+The map is drawn both on the `html` background and in an overlay under the body, and the
+three-column layout is made translucent by scoped CSS keyed on
+`html[data-ms-wz-bg="on"]`. Five constraints are load-bearing: the canvas uses content
+bounds rather than VR bounds (VR overshoots, leaving a blank band); crop arithmetic uses
+the actual render scale; plugin and settings pages are forced solid so their lists stay
+readable; the overlay is `pointer-events: none`; and zoom is clamped so small or narrow
+maps do not degenerate.
 
-## 改代码后为什么不生效
+## Further Exploration
 
-三个会让人误判「改了没用」的地方，都已在代码里防住：
+- `mapleStoryMiniPet` — the C# desktop pet this plugin's rendering is ported from.
+- `wzpy` — the WZ reader used by both workers.
 
-1. **`index.js`（host 半边）** —— DSH 用 ESM `import()`，同一路径在进程内只求值一次
-   → **必须重启 host**
-2. **`client.js`（浏览器半边）** —— bundle 的 rev 在 **host 启动时**算好，
-   **刷新页面不够** → 同样要重启 host
-3. **`py/*.py`（worker）** —— host 只在首次调用时 spawn，之后复用同一子进程
-   → 按需重启：`pkill -f wz_worker.py` / `pkill -f pet_worker.py`
+<a id="model-experience"></a>
+## Model Experience
 
-```bash
-bash tools/restart-host.sh        # 停旧 host 并按 profile 重新拉起（默认 profile=web，端口 3080）
-```
+Directly, through twelve tools. Each returns text plus structured data, and the sprite,
+map, paper-doll, and balloon tools additionally write a PNG or GIF and return a path or
+URL, so a model can present a result without a second call.
 
----
+#### KV Cache effect
 
-## 开发
+Tool definitions are static for the host's lifetime. Editing a tool schema requires a host
+restart before the change becomes visible.
 
-| 文件 | 作用 |
-|---|---|
-| `index.js` | host 半边：工具注册、API 路由、worker 池、桌宠配置 |
-| `client.js` | 浏览器半边：面板六个页签、地图背景层、桌宠浮层 |
-| `lib/client.js` | `client.js` 的镜像副本，**改完必须同步** |
-| `py/wz_worker.py` | WZ 读取 / 搜索 / 渲染 worker |
-| `py/pet_worker.py` | 桌宠雪碧图 worker |
-| `py/chair_support.py` | 椅子层级与偏移（照 `PaperdollService`） |
-| `py/doll_shared.py` | 纸娃娃共用语义（脸型互斥、类目判定） |
-| `py/effect_support.py` | ItemEff 特效查找 |
-| `py/cmsdl_support.py` | cmsdl 客户端更新 |
-| `tools/verify.sh` `tools/verify-render.py` | 验收脚本 |
-| `tools/restart-host.sh` | 重启 host |
+<a id="known-limitations-and-deferred-work"></a>
+## Known Limitations and Deferred Work
 
----
+- The 2500 chairs load on demand rather than at startup, because loading them all makes the
+  panel slow to open.
+- The `sit` action has exactly one frame in the source data, so a seated pet is entirely
+  still.
+- Balloon text prefers PingFang SC and falls back to STHeiti when absent, so glyph pixels
+  differ slightly from the C# reference; balloon geometry and border pixels match exactly.
+- Pack layout is publisher-specific. The probing in `wz_sources` is what keeps property
+  lookups honest, and a different client needs re-verification.
+- Only the pet's seated state is driven by the chair today. Multi-pet, music, tray, and
+  Agent-state features of the C# original are not implemented.
 
-## 已知限制
+<a id="dev-note"></a>
+### Dev Note
 
-- **椅子 2500 把懒加载**（点「载入椅子列表」或输关键词）—— 一次全拉会拖慢面板
-- **桌宠坐姿只有 1 帧** —— 原作 `sit` 就 1 帧，所以坐着时完全静止
-- **气泡文字字体** 优先 PingFang SC，本机没有时退到 STHeiti，文字像素有少量差异
-  （气泡边框与几何是 0.00% 差异）
-- **数据源差异** —— 不同客户端的分卷结构不同（本机实测傲天 BMS 228）；换客户端要重新验证
-- `@dsh-external/dsh-super-injector` 与本插件无关，它自己 import 失败会打日志
+<details>
+<summary>Working context for maintainers — click to expand</summary>
 
----
+Three layers cache aggressively, and each one has caused a false "my change did nothing":
 
-## 许可
+1. `index.js` is evaluated once per host process, because DSH imports it by path. A change
+   needs `bash tools/restart-host.sh`.
+2. `client.js` is served as a bundle whose revision is computed at host startup. A browser
+   refresh is not enough; the host must restart.
+3. Workers are spawned on first call and then reused. Restart them with
+   `pkill -f wz_worker.py` or `pkill -f pet_worker.py`.
 
-私用项目。冒险岛素材版权归 NEXON / 盛大所有；本插件只读取你本机的客户端数据，不分发素材。
+Run `bash tools/verify.sh` and `python tools/verify-render.py` before claiming a rendering
+or algorithm change is done. The render checker compares against C# reference images and
+fails on pixel drift; it exists because visual inspection missed real defects repeatedly.
+
+</details>
+
+**Runtime invariant:** Rendering is deterministic for a given config and WZ source.
+Caches are keyed on a compose-semantics version, so a rendering change must bump
+`_COMPOSE_VERSION` or stale images will be served.
