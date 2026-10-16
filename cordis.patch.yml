@@ -5,7 +5,7 @@
 # 直接并到这一行的 config 下。
 - insert:
     - id: maplestory-wz
-      name: '@local/dsh-maplestory-wz'
+      name: 'dsh-maplestory-wz'
       config:
         # ── 数据源（两个 worker 共用）──
         dataDir: /Volumes/SSD/mxd/mxd/Data

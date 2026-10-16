@@ -1,6 +1,6 @@
 {
-  "name": "@local/dsh-maplestory-wz",
-  "version": "0.3.0",
+  "name": "dsh-maplestory-wz",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "冒险岛 MapleStory WZ 资源读取 + 桌面宠物：本地 WZ 数据源浏览、中文名/编号搜索、怪物/NPC/装备图鉴与精灵图/GIF 渲染、纸娃娃、聊天气泡，以及浮在页面上的桌宠（怪物 / 纸娃娃两种模式）",
@@ -24,6 +24,20 @@
         "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-layout"
       ]
+    },
+    "catalog": {
+      "category": "tool",
+      "summary": {
+        "en": "Reads a local MapleStory client's WZ data in DSH: browse and search the pack tree, look up mob/NPC/equipment stats and sprite GIFs, build paper dolls with chairs, and float a desktop pet.",
+        "zh": "在 DSH 里读取本机冒险岛客户端的 WZ 数据：分类浏览与中英文名搜索、怪物/NPC/装备图鉴、动作精灵图与 GIF、纸娃娃（16 部位 + 2500 把椅子）、聊天气泡、滚动地图背景，以及一只会走动的桌宠。"
+      },
+      "capabilities": [
+        "webServer",
+        "slots",
+        "tools",
+        "fs",
+        "shell"
+      ]
     }
   },
   "files": [
@@ -43,5 +57,13 @@
     "type": "git",
     "url": "git+https://github.com/tzy502/dsh-maplestory-wz.git"
   },
-  "homepage": "https://github.com/tzy502/dsh-maplestory-wz"
+  "homepage": "https://github.com/tzy502/dsh-maplestory-wz",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "maplestory",
+    "wz",
+    "paper-doll",
+    "desktop-pet"
+  ]
 }
