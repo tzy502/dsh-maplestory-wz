@@ -53,7 +53,8 @@
     "icon.svg",
     "tools",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/screenshots"
   ],
   "license": "MIT",
   "repository": {

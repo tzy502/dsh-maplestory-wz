@@ -30,6 +30,7 @@ node.
 ## Table of Contents
 
 - [Use this plugin](#use-this-plugin)
+- [Screenshots](#screenshots)
 - [Understand the implementation](#understand-the-implementation)
 - [Model Experience](#model-experience)
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
@@ -140,6 +141,26 @@ Equipping a chair switches the pet to the seated action and stops its walking en
 clearing the chair restores both. A chair is not a character part — it lives in
 `Item/Install`, has its own search field in the panel, and is resolved by
 `py/chair_support.py`.
+
+<a id="screenshots"></a>
+## Screenshots
+
+**Paper doll** — sixteen equipment slots plus a separate chair block (2500 chairs,
+loaded on demand and searchable). The shot below wears the magic flower-field chair;
+the preview is raw 244×207 pixels, not upscaled:
+
+![Paper doll](docs/screenshots/01-paper-doll.png)
+
+**Map background** — the whole page sits on a game map whose camera pans within the
+bounds. Clarity, loop length, end-of-map pause, transition duration and auto-rotation
+are all adjustable:
+
+![Map background](docs/screenshots/02-background.png)
+
+**Resource update** — runs cmsdl in the panel to update the local client, with platform
+detection, command preview and task state:
+
+![Resource update](docs/screenshots/03-update.png)
 
 ## Understand the implementation
 
