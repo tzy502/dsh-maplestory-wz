@@ -1022,8 +1022,11 @@ window.__ModuleLoader__.load({
       // `ReferenceError: earType is not defined`，整个面板崩成空白。
       const [earType, setEarType] = useState('humanEar');
       const [earTypes, setEarTypes] = useState(['humanEar']);
-      // 椅子清单（2500 把，来自 Item/Install + String/Ins.img）—— 只在展开「椅子」时才拉
+      // 椅子清单（2500 把，来自 Item/Install + String/Ins.img）。
+      // **懒加载**：一次全拉会拖慢面板，所以默认不载入，用户点「载入椅子列表」或输入关键词才拉。
       const [chairs, setChairs] = useState([]);
+      const [chairTotal, setChairTotal] = useState(0);
+      const [chairQ, setChairQ] = useState('');
 
       // 纸娃娃配置持久化：打开面板恢复上次的样子（部位 + 耳型 + 姿势 + 翻转）。
       useEffect(() => {
@@ -1092,19 +1095,33 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { render(); }, [render]);
 
-      // 展开「椅子」时才去拉清单（2500 把，启动就拉会拖慢面板）。
-      // **关键词变化必须重新拉**：椅子的搜索是服务端做的（`chairList {query}`），
-      // 本地只筛 `parts` 里没有 Chair 这一类 → 不重拉就永远搜不到（实测搜「花田」无结果）。
+      /**
+       * 拉椅子清单。
+       *
+       * **搜索走服务端**：椅子 2500 把，本地没有全量（面板也不该一次吃 2500 条），
+       * 所以按关键词问 `chairList {query}`。之前把椅子塞进部件的搜索框里、
+       * 只筛本地 `parts`（没有 Chair 这一类）→ 永远搜不到（用户反馈「椅子无法搜索」）。
+       */
+      const loadChairs = useCallback((query) => {
+        const keyword = String(query ?? '').trim();
+        callApi('chairList', { query: keyword, limit: keyword ? 40 : 300 })
+          .then((d) => {
+            setChairs(d.chairs || []);
+            setChairTotal(Number(d.total) || 0);
+          })
+          .catch((e) => setErr(String(e.message)));
+      }, []);
+
+      // 输入关键词 → 防抖 250ms 后问服务端
       useEffect(() => {
-        if (openSlot !== 'Chair') return undefined;
-        let alive = true;
-        const timer = setTimeout(() => {
-          callApi('chairList', { query: q || '', limit: 300 })
-            .then((d) => { if (alive) setChairs(d.chairs || []); })
-            .catch(() => {});
-        }, q ? 250 : 0);
-        return () => { alive = false; clearTimeout(timer); };
-      }, [openSlot, q]);
+        if (!chairQ.trim()) return undefined;
+        const t = setTimeout(() => loadChairs(chairQ), 250);
+        return () => clearTimeout(t);
+      }, [chairQ, loadChairs]);
+
+      /** 已选椅子的中文名（清单里查不到就返回空串）。 */
+      const chairName = useCallback(
+        (id) => (chairs.find((c) => c.id === id) || {}).name || '', [chairs]);
 
       // 头型变了就重新取可用耳型；取不到就退回 humanEar
       useEffect(() => {
@@ -1129,10 +1146,16 @@ window.__ModuleLoader__.load({
       const applyToPet = useCallback(() => {
         setApplyState({ busy: true });
         const list = CHAR_SLOTS.map(([k]) => equips[k]).filter(Boolean);
-        callApi('petSetChara', { equips: list, earType })
+        // 椅子也要带上（之前漏了 → 面板挂了椅子、应用后桌宠还是站着）
+        callApi('petSetChara', { equips: list, earType, chairId: equips.Chair || '' })
           .then((d) => {
             const n = Object.keys(d?.pet?.anims || {}).length;
-            setApplyState({ ok: true, msg: `已应用到桌宠：${list.length} 个部位 · ${n} 个动作` });
+            // 通知桌宠立刻重拉：否则要手动刷新页面才看得到（用户反馈过）
+            bumpPetReload();
+            setApplyState({
+              ok: true,
+              msg: `已应用到桌宠：${list.length} 个部位${equips.Chair ? ' · 含椅子' : ''} · ${n} 个动作`,
+            });
           })
           .catch((e) => setApplyState({ ok: false, msg: String(e.message || e) }));
       }, [equips, earType]);
@@ -1299,7 +1322,63 @@ window.__ModuleLoader__.load({
                         }, it.name || it.short || it.id))))
                   : null)
               ;
-            }))
+            })),
+            // ── 椅子（独立在最后）──────────────────────────────────────
+            // 椅子不是 Character 部件（在 `Item/Install`），所以有**自己的搜索框**：
+            // 部件的「全库搜索」只筛 Character 的 16 类，管不到椅子；
+            // 而且椅子有 2500 把，共用搜索框会把部件结果淹没。
+            el('div', {
+              style: {
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                marginTop: 10, paddingTop: 10,
+                borderTop: '1px solid var(--dsw-alias-border-l1)',
+              },
+            },
+              el('span', { style: { ...S.kvKey, minWidth: 44 } }, '椅子'),
+              el('span', {
+                style: { ...S.chip, fontFamily: 'ui-monospace, monospace' },
+                title: '点一下展开/收起椅子列表',
+                onClick: () => setOpenSlot(openSlot === 'Chair' ? null : 'Chair'),
+              }, equips.Chair
+                ? `${equips.Chair}${chairName(equips.Chair) ? ` ${chairName(equips.Chair)}` : ''}`
+                : '（无）'),
+              el('span', { style: { fontSize: 11, color: T.dim } },
+                chairTotal ? `共 ${chairTotal} 把` : '…'),
+              equips.Chair
+                ? el('span', {
+                    style: { ...S.chip, fontSize: 11, color: T.dim },
+                    title: '清空「椅子」的选择',
+                    onClick: () => clearSlot('Chair'),
+                  }, '清空')
+                : null,
+              el('input', {
+                style: { ...S.input, flex: '1 1 260px', minWidth: 200 },
+                placeholder: '搜椅子名（如 花田 / 王座 / 靠垫）',
+                value: chairQ,
+                onChange: (e) => setChairQ(e.target.value),
+              }),
+              !chairs.length && !chairQ
+                ? el('button', {
+                    type: 'button', style: S.btn,
+                    onClick: () => loadChairs(''),
+                  }, '载入椅子列表')
+                : null,
+              (openSlot === 'Chair' || (chairQ && chairs.length))
+                ? el('div', {
+                    style: {
+                      width: '100%', display: 'flex', flexWrap: 'wrap', gap: 4,
+                      maxHeight: 190, overflow: 'auto', marginTop: 6,
+                    },
+                  }, chairs.length
+                    ? chairs.map((it) => el('span', {
+                        key: it.id,
+                        style: equips.Chair === it.id ? S.chipOn : S.chip,
+                        title: `${it.name || '（无名字）'} · ${it.id}`,
+                        onClick: () => pick('Chair', it.id),
+                      }, it.name || it.id))
+                    : el('span', { style: { fontSize: 11, color: T.dim, padding: '4px 0' } },
+                        chairQ ? '没有匹配的椅子' : '点「载入椅子列表」或直接输入关键词'))
+                : null)
         ),
       );
     }
@@ -2049,6 +2128,16 @@ window.__ModuleLoader__.load({
     //  slot 注册不在这里执行，而是把它的 apply 交给下面 wz 的 apply 一起调，
     //  保证两条注册落在同一个 fiber 生命周期内。
     // ══════════════════════════════════════════════════════════════════
+    /**
+     * 桌宠「重新拉取」的信号（**必须放在 petClient IIFE 之外**）。
+     *
+     * 纸娃娃面板点「应用到桌宠」后要立刻看到效果，但桌宠的数据只在 `mobId` 变化时重拉，
+     * 应用只改了配置、桌宠不知道 → 必须手动刷新页面（用户反馈「点击应用以后必须刷新」）。
+     * 面板 ++ 这个计数，桌宠用 effect 监听它重拉。放 IIFE 里面面板就拿不到了。
+     */
+    let PET_RELOAD_SEQ = 0;
+    const bumpPetReload = () => { PET_RELOAD_SEQ += 1; };
+
     const petClient = (() => {
 
     const React = require('react');
@@ -2144,6 +2233,7 @@ window.__ModuleLoader__.load({
      * 所以用一个模块级变量：组件在 sitting 变化时写它，play 统一读它。
      */
     let PET_SITTING = false;
+
 
     function play(st, anims, name, delayScale, forceSit) {
       // 坐着就只允许 sit（forceSit 显式覆盖，供「起身」用）
@@ -2269,6 +2359,8 @@ window.__ModuleLoader__.load({
       // 换宠：mobId 变化就重新拉数据（不用刷新页面）
       const [mobId, setMobId] = useState(null);
       const [pickerOpen, setPickerOpen] = useState(false);
+      // 桌宠数据加载中：纸娃娃模式下第一次合成要好几秒，没有提示就像「坏了/幻觉」
+      const [petLoading, setPetLoading] = useState(true);
       const [query, setQuery] = useState('');
       const [candidates, setCandidates] = useState([]);
       // 快速选择行用的两份数据：经典候选（presets）与当前怪物编号。
@@ -2299,9 +2391,20 @@ window.__ModuleLoader__.load({
       const dragRef = useRef(null);
       const lastSnapRef = useRef('');
 
+      // 面板点「应用到桌宠」时它会 ++（见 bumpPetReload 注释）——
+      // 这个 state 只为让下面的取数 effect 重跑。
+      const [reloadSeq, setReloadSeq] = useState(0);
+      useEffect(() => {
+        const t = setInterval(() => {
+          setReloadSeq((n) => (n === PET_RELOAD_SEQ ? n : PET_RELOAD_SEQ));
+        }, 500);
+        return () => clearInterval(t);
+      }, []);
+
       // 取数据（Host HTTP）
       useEffect(() => {
         let alive = true;
+        setPetLoading(true);
         setError(null);
         callApi('pet', mobId ? { id: mobId } : {})
           .then((payload) => {
@@ -2311,9 +2414,10 @@ window.__ModuleLoader__.load({
             setData(payload);
             setMobId(payload.id);
           })
-          .catch((err) => alive && setError(String(err && err.message ? err.message : err)));
+          .catch((err) => alive && setError(String(err && err.message ? err.message : err)))
+          .finally(() => { if (alive) setPetLoading(false); });
         return () => { alive = false; };
-      }, [mobId]);
+      }, [mobId, reloadSeq]);
 
       // 打开选择器时拉一批经典候选
       useEffect(() => {
@@ -2949,8 +3053,31 @@ window.__ModuleLoader__.load({
       return el('div', { style: layerStyle, 'data-desktop-pet': 'layer' },
         // 换宠面板的加载转圈动画（内联注入一次，key 固定所以不会重复累积）
         el('style', { key: 'petSpin', dangerouslySetInnerHTML: { __html: '@keyframes msWzSpin{to{transform:rotate(360deg)}}' } }),
+        // 加载中：显示转圈 + 文案，别让用户看着一片空白（纸娃娃首次合成要好几秒）
+        petLoading || !data
+          ? el('div', {
+              style: {
+                position: 'absolute', left: 16, bottom: 16,
+                display: 'flex', alignItems: 'center', gap: 6,
+                fontSize: 11, padding: '6px 10px',
+                background: 'var(--dsw-alias-bg-layer-2)',
+                border: '1px solid var(--dsw-alias-border-l2)',
+                borderRadius: 10, pointerEvents: 'none', zIndex: 2,
+              },
+              'data-desktop-pet': 'loading',
+            },
+              el('span', {
+                style: {
+                  width: 12, height: 12, flex: '0 0 auto',
+                  border: '2px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+                  borderTopColor: 'var(--dsw-alias-brand-primary, #4a8cff)',
+                  borderRadius: '50%', animation: 'msWzSpin .7s linear infinite',
+                },
+              }),
+              el('span', null, error ? `桌宠出错：${String(error).slice(0, 60)}` : '桌宠加载中…'))
+          : null,
         el('div', {
-          style: petStyle,
+          style: { ...petStyle, display: petLoading || !data ? 'none' : undefined },
           'data-desktop-pet': 'pet',
         'data-pet-walk': walkState,
         ref: (node) => { if (node) window.__petEl = node; },
