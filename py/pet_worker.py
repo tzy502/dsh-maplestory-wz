@@ -106,7 +106,7 @@ OUT_DIR = os.environ.get("PET_OUT_DIR") or os.path.expanduser("~/.dsh/desktop-pe
 
 _roots: Dict[str, Any] = {}
 # 合成语义版本：改了合成逻辑就 +1（会让输出文件名变化，从而绕开浏览器缓存）
-_COMPOSE_VERSION = 2
+_COMPOSE_VERSION = 3
 _image_cache: Dict[str, Any] = {}
 _string_cache: Dict[str, Dict[str, Dict[str, str]]] = {}
 _IMAGE_CACHE_MAX = 256
@@ -683,11 +683,17 @@ def _eq_for(equips):
 
 
 def _apply_chair_frames(imgs, chair_id: str, eq_, pose: str, flip: bool):
-    """把椅子叠到坐姿的每一帧上（每帧各自算 navel，避免帧间漂移）。"""
+    """把椅子逐帧叠到坐姿上，返回 `(帧列表, 时长列表)`。
+
+    椅子自己有动画：`03019632` 的 `effect` 有 **12 帧、每帧 210ms**（花瓣飘、草摇），
+    只画第 0 帧会得到一张死图（用户反馈「椅子会动的 你没实现」）。
+    而角色的 `sit` 只有 1 帧（原作如此），所以帧数**取椅子的**，角色帧循环复用。
+    """
     try:
         import chair_support
     except Exception:  # noqa: BLE001
-        return imgs
+        return imgs, []
+
     try:
         item_root = root_for("Item")
 
@@ -702,17 +708,30 @@ def _apply_chair_frames(imgs, chair_id: str, eq_, pose: str, flip: bool):
             item_root, _Acc(), decode_canvas, REGION, chair_id)
     except Exception as exc:  # noqa: BLE001
         log(f"椅子 {chair_id} 读取失败：{exc}")
-        return imgs
+        return imgs, []
     if not chair:
         log(f"椅子 {chair_id} 不存在")
-        return imgs
+        return imgs, []
+
+    # 动画长度取**所有层里最长的那个**（effect 12 帧、effect2 1 帧 → 12）
+    count = max(len(L["frames"]) for L in chair["layers"]) if chair["layers"] else 0
+    if count <= 1:
+        count = max(1, len(imgs))
+
+    # 每帧时长：取第一层第 i 帧的 delay（缺省 210，与 WZ 里的值一致）
+    base_frames = chair["layers"][0]["frames"] if chair["layers"] else []
+    delays = [int(base_frames[i]["delay"]) if i < len(base_frames) else 210 for i in range(count)]
 
     out = []
-    for fi, im in enumerate(imgs):
+    for i in range(count):
+        src = imgs[min(i, len(imgs) - 1)] if imgs else None
+        if src is None:
+            break
+        # navel 用**角色 sit 的第 0 帧**算（坐姿只有 1 帧，角色不动，算一次就够）
         navel = None
         try:
             pls, _a = cr._build_placements(
-                eq_, pose=pose, frame=fi, ear_type=None,
+                eq_, pose=pose, frame=0, ear_type=None,
                 hide_hair_full=False, hide_hair_set=frozenset(),
                 cap_vslot_tokens=frozenset(), return_anchors=True)
             tops = [p.top_left for p in pls if p.top_left is not None]
@@ -721,14 +740,14 @@ def _apply_chair_frames(imgs, chair_id: str, eq_, pose: str, flip: bool):
         except Exception:  # noqa: BLE001
             navel = None
         if navel is None:
-            navel = (im.width // 2, im.height)
+            navel = (src.width // 2, src.height)
         try:
             out.append(chair_support.compose_with_chair(
-                im.convert("RGBA"), navel, chair, chair_id, frame_index=0,
+                src.convert("RGBA"), navel, chair, chair_id, frame_index=i,
                 has_sit_action=True))
         except Exception:  # noqa: BLE001
-            out.append(im)
-    return out
+            out.append(src)
+    return out, delays
 
 
 def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -821,7 +840,13 @@ def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
         # 挂了椅子：坐姿 + 叠椅子层（与纸娃娃面板同一个 compose_with_chair）。
         # 「sit」只有 1 帧，所以坐姿雪碧图天然就是静止的。
         if chair_id and imgs and real == "sit":
-            imgs = _apply_chair_frames(imgs, chair_id, eq_=_eq_for(equips), pose="sit", flip=flip)
+            chair_imgs, chair_delays = _apply_chair_frames(
+                imgs, chair_id, eq_=_eq_for(equips), pose="sit", flip=flip)
+            if chair_imgs:
+                imgs = chair_imgs
+                # 时长也跟着椅子走，否则 12 帧会用角色 sit 的节奏播（错速）
+                if chair_delays:
+                    delays = chair_delays
         staged[str(w)] = (real, imgs, delays)
     # ── 排版（第二遍）────────────────────────────────────────────────
     # 依据 wzpy `compose_animation` 的**承诺**（源码注释原文）：
@@ -869,7 +894,10 @@ def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
             frames_meta.append({"index": i, "x": i * step, "y": 0,
                                 "w": step, "h": cell_h, "ox": ox, "oy": oy})
         os.makedirs(OUT_DIR, exist_ok=True)
+        # 文件名必须带**椅子编号**：带椅子时 sit 是 12 帧（椅子自己的动画），
+        # 不带时只有 1 帧，两者帧数不同却同名 → 开关椅子会命中同一张旧图。
         stem = (f"pet_chara_{'_'.join(e.lstrip('0') or '0' for e in equips)}_{real}"
+                f"{('_chair' + (chair_id.lstrip('0') or '0')) if chair_id else ''}"
                 f"{'_flip' if flip else ''}_v{_COMPOSE_VERSION}")
         png = os.path.join(OUT_DIR, f"{stem}.png")
         sheet.save(png)

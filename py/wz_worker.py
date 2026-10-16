@@ -1016,11 +1016,66 @@ def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str):
 
     try:
         return chair_support.compose_with_chair(
-            img, navel, chair, chair_id, frame_index=0,
+            # frame 也驱动椅子帧：椅子的 effect 有 12 帧，面板按 frame 取单帧时
+            # 应该拿到对应那一帧（否则永远第 0 帧）
+            img, navel, chair, chair_id, frame_index=int(frame or 0),
             has_sit_action=_has_action(equips, "sit"))
     except Exception as exc:  # noqa: BLE001
         logger.warning("椅子合成失败：%s", exc)
         return img
+
+
+def _apply_chair_anim(imgs, equips, chair_id: str, flip: bool, count_only: bool = False):
+    """逐帧把椅子叠上去，返回 `(帧列表, 时长列表)`。
+
+    椅子自己有动画（`03019632` 花田椅 `effect` 12 帧 × 210ms），只画第 0 帧会得到死图。
+    角色 `sit` 只有 1 帧，所以帧数取椅子的，角色帧循环复用。
+    `count_only=True` 时只算时长、不合成图（给 delays 用，省一次渲染）。
+    """
+    import chair_support
+    try:
+        chair = chair_support.render_chair_pieces(
+            root_for("Item"), _ChairAccess(), decode_canvas, REGION, chair_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("椅子 %s 读取失败：%s", chair_id, exc)
+        return ([] if count_only else imgs), []
+    if not chair or not chair.get("layers"):
+        return ([] if count_only else imgs), []
+
+    count = max(len(L["frames"]) for L in chair["layers"])
+    base = chair["layers"][0]["frames"]
+    delays = [int(base[i]["delay"]) if i < len(base) else 210 for i in range(count)]
+    if count_only:
+        return [], delays
+    if count <= 1:
+        count = max(1, len(imgs))
+
+    cr = char_renderer()
+    navel = None
+    try:
+        pls, _a = cr._build_placements(
+            equips, pose="sit", frame=0, ear_type=None,
+            hide_hair_full=False, hide_hair_set=frozenset(),
+            cap_vslot_tokens=frozenset(), return_anchors=True)
+        tops = [p.top_left for p in pls if p.top_left is not None]
+        if tops:
+            navel = (-min(t[0] for t in tops), -min(t[1] for t in tops))
+    except Exception:  # noqa: BLE001
+        navel = None
+
+    out = []
+    for i in range(count):
+        src = imgs[min(i, len(imgs) - 1)] if imgs else None
+        if src is None:
+            break
+        nav = navel or (src.width // 2, src.height)
+        try:
+            out.append(chair_support.compose_with_chair(
+                src.convert("RGBA"), nav, chair, chair_id, frame_index=i,
+                has_sit_action=True))
+        except Exception:  # noqa: BLE001
+            out.append(src)
+    return out, delays
 
 
 def _has_action(equips, action: str) -> bool:
@@ -1127,15 +1182,35 @@ def cmd_char_anim(args: Dict[str, Any]) -> Dict[str, Any]:
     flip = bool(args.get("flip"))
     frames = args.get("frames")
     frame_tuple = tuple(int(f) for f in frames) if frames else None
+    chair_id = str(args.get("chairId") or args.get("chair") or "").strip()
+    if chair_id:
+        pose = "sit"
     t0 = time.time()
-    imgs = cr.compose_animation(equips, pose=pose, flip=flip, frames=frame_tuple)
+    resolved_anim = doll_shared.resolve_face_equips(equips)
+    imgs = cr.compose_animation(resolved_anim, pose=pose, flip=flip, frames=frame_tuple)
     if not imgs:
         raise ValueError("纸娃娃逐帧合成返回空列表（编号可能都不存在）")
+    # 挂了椅子：椅子自己有动画（花田椅 12 帧），逐帧叠上去再出图，
+    # 否则面板预览是一张死图（用户反馈「椅子会动的 你没实现」）。
+    if chair_id and pose == "sit":
+        chair_imgs, chair_delays = _apply_chair_anim(imgs, resolved_anim, chair_id, flip)
+        if chair_imgs:
+            imgs = chair_imgs
+        if chair_delays:
+            # 时长跟着椅子走，否则 12 帧会按 sit 的节奏播
+            pass
     delays = []
     try:
-        delays = list(cr.pose_frame_delays(equips, pose))
+        delays = list(cr.pose_frame_delays(resolved_anim, pose))
     except Exception:  # noqa: BLE001
         delays = []
+    if chair_id and pose == "sit":
+        try:
+            _ci, _cd = _apply_chair_anim(imgs, resolved_anim, chair_id, flip, count_only=True)
+            if _cd:
+                delays = _cd
+        except Exception:  # noqa: BLE001
+            pass
     cw, ch = imgs[0].size
     pad = 2
     sheet = Image.new("RGBA", (len(imgs) * (cw + pad) + pad, ch + pad * 2), (0, 0, 0, 0))
