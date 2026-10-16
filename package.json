@@ -1,0 +1,39 @@
+{
+  "name": "@local/dsh-maplestory-wz",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "冒险岛 MapleStory WZ 资源读取 + 桌面宠物：本地 WZ 数据源浏览、中文名/编号搜索、怪物/NPC/装备图鉴与精灵图/GIF 渲染、纸娃娃、聊天气泡，以及浮在页面上的桌宠（怪物 / 纸娃娃两种模式）",
+  "meta": {
+    "title": "冒险岛 WZ 资源 + 桌宠",
+    "description": "读取本地冒险岛客户端 WZ：分类/节点浏览、中英文名与编号搜索、怪物·NPC·装备图鉴（属性表 + 数据来源 + 帧网格）、按 origin 锚点合成精灵图与 GIF、纸娃娃逐帧合成、聊天气泡九宫格；并把桌宠渲染在 shell.overlay 浮层里（可拖拽/走动）。"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "py/wz_worker.py",
+    "py/pet_worker.py",
+    "README.md",
+    "icon.svg",
+    "tools"
+  ]
+}

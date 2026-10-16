@@ -1,0 +1,21 @@
+# 冒险岛资源 + 桌宠（合并后的单一插件）
+#
+# 桌宠原先在 @local/dsh-desktop-pet 里单独一行，合并后不再是独立包；
+# 它的配置项（mobId / mode / scale / speed / flySpeed / flyChance …）
+# 直接并到这一行的 config 下。
+- insert:
+    - id: maplestory-wz
+      name: '@local/dsh-maplestory-wz'
+      config:
+        # ── 数据源（两个 worker 共用）──
+        dataDir: /Volumes/SSD/mxd/mxd/Data
+        region: BMS
+        version: 228
+
+        # ── 桌面宠物（原 @local/dsh-desktop-pet 的行）──
+        mobId: '1210102'
+        originFallback: center
+        scale: 1
+        speed: 100
+        flySpeed: 60
+        flyChance: 0.35

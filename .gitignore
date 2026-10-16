@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+
+# 插件产物不进仓库（落在 ~/.dsh/wz-assets/ 与 ~/.dsh/desktop-pet/，本来就在仓库外）
+*.png
+!icon.svg
+
+# 验收脚本的临时输出
+/tmp/
