@@ -5,6 +5,8 @@ kind: "package-reference"
 
 # @local/dsh-maplestory-wz
 
+[English](README.md) | [中文](README.zh.md)
+
 ## Summary
 
 Read the WZ files of a MapleStory client installed on this machine and use them from DSH,
@@ -58,20 +60,36 @@ Add the dependency to the profile's `package.json`, then set the data source in
     - id: maplestory-wz
       name: '@local/dsh-maplestory-wz'
       config:
-        dataDir: /Volumes/SSD/mxd/mxd/Data
+        dataDir: /path/to/MapleStory/Data
         region: BMS
         version: 228
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dataDir` | — | Client `Data` directory, required. |
+| `dataDir` | — | Client `Data` directory, required. Example: `/path/to/MapleStory/Data`. |
 | `region` | `BMS` | Region; selects string tables and decryption keys. |
 | `version` | `228` | WZ version. |
 | `wzpyPath` | auto | Clone containing `wzpy/`. |
 | `python` | auto | Interpreter with Pillow and numpy. |
 | `mobId` | `1210102` | The pet's starting mob. |
 | `scale` `speed` `flySpeed` `flyChance` | `1` `100` `60` `0.35` | Pet sizing and motion. |
+
+**About `region` (important).** The underlying `wzpy` only knows three keys:
+
+```python
+WZ_IV = {
+    "GMS": bytes([0x4D, 0x23, 0xC7, 0x2B]),
+    "EMS": bytes([0xB9, 0x7D, 0x63, 0xE9]),
+    "BMS": bytes([0x00, 0x00, 0x00, 0x00]),   # also CLASSIC / modern 64-bit clients
+}
+```
+
+There is **no `CMS` value** — passing it raises `KeyError: 'CMS'` and the plugin stops.
+`BMS` is a **zero IV** and bypasses AES entirely, which is exactly what Chinese clients
+(CMS / 冒险岛) ship, so a CMS client still uses `region: BMS`. To check: if the string
+tables decode to Chinese (`1210102` → `花蘑菇`), the region is right; if they come back
+empty or raise `KeyError`, it is wrong.
 
 The interpreter is discovered in this order: `config.python`, `$WZ_PYTHON`,
 `~/.hermes/cache/scratch/wz-env/bin/python`, `/opt/homebrew/bin/python3`,

@@ -982,7 +982,8 @@ def _chair_piece_cache():
         return _CHAIR_CACHE
 
 
-def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str):
+def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str,
+                 frame: int = 0):
     """把椅子按 minipet 的层级/偏移叠到角色帧上，返回**扩展过画布**的新图。
 
     navel 的像素位置取自渲染器自己的 `_build_placements(..., return_anchors=True)`：
@@ -993,10 +994,10 @@ def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str):
         chair = chair_support.render_chair_pieces(
             root_for("Item"), _ChairAccess(), decode_canvas, REGION, chair_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("椅子 %s 读取失败：%s", chair_id, exc)
+        log("椅子 %s 读取失败：%s", chair_id, exc)
         return img
     if not chair:
-        logger.warning("椅子 %s 不存在（Item/Install 下没找到）", chair_id)
+        log("椅子 %s 不存在（Item/Install 下没找到）", chair_id)
         return img
 
     cr = char_renderer()
@@ -1010,7 +1011,7 @@ def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str):
         if tops:
             navel = (-min(t[0] for t in tops), -min(t[1] for t in tops))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("取 navel 失败（椅子将按画布中心兜底）：%s", exc)
+        log("取 navel 失败（椅子将按画布中心兜底）：%s", exc)
     if navel is None:
         navel = (img.width // 2, img.height)
 
@@ -1021,7 +1022,7 @@ def _apply_chair(img, equips, pose: str, flip: bool, chair_id: str):
             img, navel, chair, chair_id, frame_index=int(frame or 0),
             has_sit_action=_has_action(equips, "sit"))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("椅子合成失败：%s", exc)
+        log("椅子合成失败：%s", exc)
         return img
 
 
@@ -1037,10 +1038,12 @@ def _apply_chair_anim(imgs, equips, chair_id: str, flip: bool, count_only: bool 
         chair = chair_support.render_chair_pieces(
             root_for("Item"), _ChairAccess(), decode_canvas, REGION, chair_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("椅子 %s 读取失败：%s", chair_id, exc)
+        log("椅子 %s 读取失败：%s", chair_id, exc)
         return ([] if count_only else imgs), []
     if not chair or not chair.get("layers"):
-        return ([] if count_only else imgs), []
+        # 没有椅子就**原样返回**（不要给 count_only 之外的调用返回空列表，
+        # 否则调用方会把角色帧丢掉 —— 第一版就写错过）
+        return ([], []) if count_only else (imgs, [])
 
     count = max(len(L["frames"]) for L in chair["layers"])
     base = chair["layers"][0]["frames"]
@@ -1075,7 +1078,7 @@ def _apply_chair_anim(imgs, equips, chair_id: str, flip: bool, count_only: bool 
         frames, anim_delays = chair_support.compose_chair_animation(
             base, nav, chair, chair_id, has_sit_action=True)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("椅子动画合成失败：%s", exc)
+        log("椅子动画合成失败：%s", exc)
         return imgs, delays
     if anim_delays:
         delays = anim_delays
@@ -1152,7 +1155,7 @@ def cmd_char_render(args: Dict[str, Any]) -> Dict[str, Any]:
         img = Image.new("RGBA", (_uw, _uh), (0, 0, 0, 0))
         img.alpha_composite(_imgs[_want].convert("RGBA"), (0, 0))
     if chair_id:
-        img = _apply_chair(img, resolved, pose, flip, chair_id)
+        img = _apply_chair(img, resolved, pose, flip, chair_id, frame=frame)
     if img.width <= 1 and img.height <= 1:
         raise ValueError(
             f"合成结果为空（{len(equips)} 个编号都没落上）。检查编号是否存在于 "
@@ -1196,25 +1199,21 @@ def cmd_char_anim(args: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("纸娃娃逐帧合成返回空列表（编号可能都不存在）")
     # 挂了椅子：椅子自己有动画（花田椅 12 帧），逐帧叠上去再出图，
     # 否则面板预览是一张死图（用户反馈「椅子会动的 你没实现」）。
+    # 椅子逐帧合成一次就够：帧与时长一起拿回来（第一版调了两次，白渲染一遍）
+    chair_delays = []
     if chair_id and pose == "sit":
         chair_imgs, chair_delays = _apply_chair_anim(imgs, resolved_anim, chair_id, flip)
         if chair_imgs:
             imgs = chair_imgs
-        if chair_delays:
-            # 时长跟着椅子走，否则 12 帧会按 sit 的节奏播
-            pass
     delays = []
-    try:
-        delays = list(cr.pose_frame_delays(resolved_anim, pose))
-    except Exception:  # noqa: BLE001
-        delays = []
-    if chair_id and pose == "sit":
+    if chair_delays:
+        # 时长跟着椅子走，否则 12 帧会按 sit 的节奏播（错速）
+        delays = chair_delays
+    else:
         try:
-            _ci, _cd = _apply_chair_anim(imgs, resolved_anim, chair_id, flip, count_only=True)
-            if _cd:
-                delays = _cd
+            delays = list(cr.pose_frame_delays(resolved_anim, pose))
         except Exception:  # noqa: BLE001
-            pass
+            delays = []
     cw, ch = imgs[0].size
     pad = 2
     sheet = Image.new("RGBA", (len(imgs) * (cw + pad) + pad, ch + pad * 2), (0, 0, 0, 0))
