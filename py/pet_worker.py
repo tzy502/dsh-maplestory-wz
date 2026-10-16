@@ -722,32 +722,42 @@ def _apply_chair_frames(imgs, chair_id: str, eq_, pose: str, flip: bool):
     base_frames = chair["layers"][0]["frames"] if chair["layers"] else []
     delays = [int(base_frames[i]["delay"]) if i < len(base_frames) else 210 for i in range(count)]
 
-    out = []
-    for i in range(count):
-        src = imgs[min(i, len(imgs) - 1)] if imgs else None
-        if src is None:
-            break
-        # navel 用**角色 sit 的第 0 帧**算（坐姿只有 1 帧，角色不动，算一次就够）
+    # 角色帧（sit 只有 1 帧）垫到统一大小，再交给 compose_chair_animation 一次出全部帧。
+    # **不要逐帧调 compose_with_chair**：那样每帧各算各的并集，画布忽大忽小、
+    # 内容在格子里上下跳 —— 就是用户看到的「椅子在抖动」。
+    uw = max(im.width for im in imgs)
+    uh = max(im.height for im in imgs)
+    base = imgs[0].convert("RGBA")
+    if base.width != uw or base.height != uh:
+        c = Image.new("RGBA", (uw, uh), (0, 0, 0, 0))
+        c.alpha_composite(base, (0, 0))
+        base = c
+
+    navel = None
+    try:
+        pls, _a = cr._build_placements(
+            eq_, pose=pose, frame=0, ear_type=None,
+            hide_hair_full=False, hide_hair_set=frozenset(),
+            cap_vslot_tokens=frozenset(), return_anchors=True)
+        tops = [p.top_left for p in pls if p.top_left is not None]
+        if tops:
+            navel = (-min(t[0] for t in tops), -min(t[1] for t in tops))
+    except Exception:  # noqa: BLE001
         navel = None
-        try:
-            pls, _a = cr._build_placements(
-                eq_, pose=pose, frame=0, ear_type=None,
-                hide_hair_full=False, hide_hair_set=frozenset(),
-                cap_vslot_tokens=frozenset(), return_anchors=True)
-            tops = [p.top_left for p in pls if p.top_left is not None]
-            if tops:
-                navel = (-min(t[0] for t in tops), -min(t[1] for t in tops))
-        except Exception:  # noqa: BLE001
-            navel = None
-        if navel is None:
-            navel = (src.width // 2, src.height)
-        try:
-            out.append(chair_support.compose_with_chair(
-                src.convert("RGBA"), navel, chair, chair_id, frame_index=i,
-                has_sit_action=True))
-        except Exception:  # noqa: BLE001
-            out.append(src)
-    return out, delays
+    if navel is None:
+        navel = (base.width // 2, base.height)
+
+    try:
+        frames, anim_delays = chair_support.compose_chair_animation(
+            base, navel, chair, chair_id, has_sit_action=True)
+    except Exception as exc:  # noqa: BLE001
+        log(f"椅子动画合成失败：{exc}")
+        return imgs, delays
+    if anim_delays:
+        delays = anim_delays
+    if frames:
+        return frames, delays
+    return imgs, delays
 
 
 def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -872,6 +882,48 @@ def cmd_chara(args: Dict[str, Any]) -> Dict[str, Any]:
     # 为什么必须统一格：客户端 left = snap.x - anchor.x，各动作格/锚点不同的话，
     # 换动作时整体会跳（实测 stand 107×84 anchor(63,84) vs move 109×101 anchor(64,101)
     # → 换动作跳 17~18px）。
+    # **挂了椅子就不要跨动作统一格**：
+    # 椅子只作用于 `sit`，而带花田的 sit 是 244×207，stand/move 只有 76×90。
+    # 统一会把 stand/move 也撑到 244×207 —— 桌宠站/走时套进一个巨大的空画布，
+    # 看起来又大又飘（用户反馈「椅子在抖动」的真正来源）。
+    # 而「换动作会跳」这个统一格要解决的问题，在有椅子时**不存在**：
+    # 客户端坐着时只播 sit（`PET_SITTING` 把动作钉死在 sit），不会跨动作切换。
+    if chair_id:
+        for w, (real, imgs, delays) in staged.items():
+            cw_, ch_ = (imgs[0].width, imgs[0].height) if imgs else (1, 1)
+            step = cw_
+            sheet = Image.new("RGBA", (len(imgs) * step, ch_), (0, 0, 0, 0))
+            frames_meta = []
+            for i, im in enumerate(imgs):
+                ox = i * step
+                oy = 0
+                sheet.alpha_composite(im.convert("RGBA"), (ox, oy))
+                frames_meta.append({"index": i, "x": ox, "y": oy, "w": im.width,
+                                    "h": im.height, "delay": int(delays[i]) if i < len(delays) else 180})
+            stem = (f"pet_chara_{'_'.join(e.lstrip('0') or '0' for e in equips)}_{real}"
+                    f"{('_chair' + (chair_id.lstrip('0') or '0')) if chair_id else ''}"
+                    f"{'_flip' if flip else ''}_v{_COMPOSE_VERSION}")
+            png = os.path.join(OUT_DIR, f"{stem}.png")
+            sheet.save(png)
+            out_anims[str(w)] = {
+                "file": png, "action": real, "count": len(imgs),
+                "cell": {"w": step, "h": ch_},
+                "anchor": {"x": step // 2, "y": ch_},
+                "cols": len(imgs), "rows": 1,
+                "frames": frames_meta,
+                "delays": [int(delays[i]) if i < len(delays) else 180 for i in range(len(imgs))],
+                "totalMs": sum(int(delays[i]) if i < len(delays) else 180 for i in range(len(imgs))),
+            }
+        # URL 由 host 侧统一拼（与正常路径同一处），这里只给 file 路径
+        return {"kind": "chara", "id": "chara:" + ",".join(equips), "name": "纸娃娃",
+                "earType": ear_type, "path": "Character/<equips>",
+                "actions": [{"name": k, "frames": v["count"]} for k, v in out_anims.items()],
+                "originFallback": "center", "defaultDelay": 180,
+                "anims": {k: {**v, "url": f"/dsh-maplestory-wz/file/{os.path.basename(v['file'])}"}
+                          for k, v in out_anims.items()},
+                "resolved": resolved, "missing": missing, "outDir": OUT_DIR,
+                "equips": equips, "chairId": chair_id}
+
     sizes = [(v[1][0].width, v[1][0].height) for v in staged.values() if v[1]] or [(1, 1)]
     cell_w = max(w_ for w_, _h in sizes)
     cell_h = max(h_ for _w, h_ in sizes)

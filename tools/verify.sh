@@ -89,7 +89,9 @@ for k in a:
     u=a[k].get("url")
     if u: print(u); break' 2>/dev/null)"
   if [ -n "$PU" ]; then
-    curl -s -m 30 -o /tmp/wz_verify_pet.png "$HOST$PU" 2>/dev/null
+    # 超时放宽到 120s：怪物雪碧图能到 2MB+，30s 会偶发截断 →
+    # PIL 打不开 → 验收误报「疑似空白」（实测踩到一次）
+    curl -s -m 120 -o /tmp/wz_verify_pet.png "$HOST$PU" 2>/dev/null
     PS="${PS:-}"; PS="$("$PY" -c "
 from PIL import Image
 im=Image.open('/tmp/wz_verify_pet.png').convert('RGBA')

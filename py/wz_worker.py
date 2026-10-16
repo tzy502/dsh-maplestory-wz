@@ -1063,19 +1063,23 @@ def _apply_chair_anim(imgs, equips, chair_id: str, flip: bool, count_only: bool 
     except Exception:  # noqa: BLE001
         navel = None
 
-    out = []
-    for i in range(count):
-        src = imgs[min(i, len(imgs) - 1)] if imgs else None
-        if src is None:
-            break
-        nav = navel or (src.width // 2, src.height)
-        try:
-            out.append(chair_support.compose_with_chair(
-                src.convert("RGBA"), nav, chair, chair_id, frame_index=i,
-                has_sit_action=True))
-        except Exception:  # noqa: BLE001
-            out.append(src)
-    return out, delays
+    uw = max(im.width for im in imgs)
+    uh = max(im.height for im in imgs)
+    base = imgs[0].convert("RGBA")
+    if base.width != uw or base.height != uh:
+        c = Image.new("RGBA", (uw, uh), (0, 0, 0, 0))
+        c.alpha_composite(base, (0, 0))
+        base = c
+    nav = navel or (base.width // 2, base.height)
+    try:
+        frames, anim_delays = chair_support.compose_chair_animation(
+            base, nav, chair, chair_id, has_sit_action=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("椅子动画合成失败：%s", exc)
+        return imgs, delays
+    if anim_delays:
+        delays = anim_delays
+    return (frames or imgs), delays
 
 
 def _has_action(equips, action: str) -> bool:

@@ -206,14 +206,12 @@ def _canvas_meta_for(frame, item_root, parsed):
     return fn(frame, item_root)
 
 
-def compose_with_chair(char_img: Image.Image, navel_px: Tuple[int, int],
-                       chair: Dict[str, Any], chair_id: str,
-                       frame_index: int = 0,
-                       has_sit_action: bool = True) -> Image.Image:
-    """把椅子按 minipet 的层级与偏移合成到角色图上。
+def chair_placements(chair: Dict[str, Any], chair_id: str,
+                     navel_px: Tuple[int, int], has_sit_action: bool = True):
+    """算出椅子各层在每一帧的落点。
 
-    ``char_img`` 必须已经**垫齐到与 navel_px 对应的同一张画布**（即
-    `navel_px` 是这张图里 navel 的像素位置）。
+    返回 ``(placements, count)``；``placements[i]`` 是第 i 帧的
+    ``[(z, img, tx, ty), …]``（``tx/ty`` 是相对**角色那张图**的坐标）。
     """
     info = chair["info"]
     bm = info.get("bodyRelMove")
@@ -221,51 +219,111 @@ def compose_with_chair(char_img: Image.Image, navel_px: Tuple[int, int],
     bmx, bmy = (int(bm[0]), int(bm[1])) if has_bm else (0, 0)
     id_num = int(str(chair_id).lstrip("0") or 0)
 
-    # 椅子比角色大得多、而且锚在 navel 偏左（3019632 是 241x192、锚 -47），
-    # 直接用角色的画布会**把椅子裁掉大半**（实测只剩 x0..99，看着像"位置错"）。
-    # 所以先算出所有层的落点，再把画布扩到刚好容纳「角色 + 全部椅子层」。
-    placements = []
-    for layer in chair["layers"]:
-        off_x, off_y = compute_chair_effect_offset(
+    def off(layer):
+        return compute_chair_effect_offset(
             has_bm, (bmx, bmy), has_sit_action, layer["pos"],
             remove_body=info.get("removeBody", False),
             has_taming_mob=bool(info.get("tamingMob")),
             id_num=id_num,
         )
-        frames = layer["frames"]
-        fr = frames[min(frame_index, len(frames) - 1)]
-        tx = navel_px[0] + off_x - fr["origin"][0]
-        ty = navel_px[1] + off_y - fr["origin"][1]
-        placements.append((layer["z"], fr["img"], tx, ty))
 
-    min_x = 0
-    min_y = 0
-    max_x = char_img.width
-    max_y = char_img.height
-    for _z, im, tx, ty in placements:
+    count = max((len(L["frames"]) for L in chair["layers"]), default=1)
+    placements = []
+    for i in range(count):
+        frame_layers = []
+        for layer in chair["layers"]:
+            off_x, off_y = off(layer)
+            frames = layer["frames"]
+            fr = frames[min(i, len(frames) - 1)]
+            frame_layers.append((
+                layer["z"], fr["img"],
+                navel_px[0] + off_x - fr["origin"][0],
+                navel_px[1] + off_y - fr["origin"][1],
+            ))
+        placements.append(frame_layers)
+    return placements, count
+
+
+def _bbox(char_img: Image.Image, layers) -> Tuple[int, int, int, int]:
+    """角色 + 这些椅子层的并集，坐标相对角色图左上。"""
+    min_x = min_y = 0
+    max_x, max_y = char_img.width, char_img.height
+    for _z, im, tx, ty in layers:
         min_x = min(min_x, tx)
         min_y = min(min_y, ty)
         max_x = max(max_x, tx + im.width)
         max_y = max(max_y, ty + im.height)
-    pad_x = -min_x if min_x < 0 else 0
-    pad_y = -min_y if min_y < 0 else 0
-    out = Image.new("RGBA", (max_x + pad_x, max_y + pad_y), (0, 0, 0, 0))
-    out.alpha_composite(char_img, (pad_x, pad_y))
-    navel_px = (navel_px[0] + pad_x, navel_px[1] + pad_y)
-    placements = [(z, im, tx + pad_x, ty + pad_y) for z, im, tx, ty in placements]
+    return min_x, min_y, max_x, max_y
 
-    # z 大的先画（minipet: OrderByDescending(ZIndex)）
-    for z, im, tx, ty in sorted(placements, key=lambda t: -t[0]):
+
+def render_chair_frame(char_img: Image.Image, layers, box) -> Image.Image:
+    """按给定 box 裁出的画布渲染一帧（层级照 minipet：z 大的先画）。"""
+    min_x, min_y, max_x, max_y = box
+    out = Image.new("RGBA", (max_x - min_x, max_y - min_y), (0, 0, 0, 0))
+    out.alpha_composite(char_img, (-min_x, -min_y))
+    for z, im, tx, ty in sorted(layers, key=lambda t: -t[0]):
+        pos = (tx - min_x, ty - min_y)
         if z <= 0:
-            # 椅子本体：在角色**后面**
             base = Image.new("RGBA", out.size, (0, 0, 0, 0))
-            base.alpha_composite(im, (tx, ty))
+            base.alpha_composite(im, pos)
             base.alpha_composite(out, (0, 0))
             out = base
         else:
-            # 罩在身前（effect2）
-            out.alpha_composite(im, (tx, ty))
+            out.alpha_composite(im, pos)
     return out
+
+
+def compose_chair_animation(char_img: Image.Image, navel_px: Tuple[int, int],
+                            chair: Dict[str, Any], chair_id: str,
+                            has_sit_action: bool = True):
+    """把椅子逐帧合成成一组**尺寸一致、且相对角色不抖**的帧。
+
+    照 minipet 的两条修复：
+
+    1. **画布取全部帧的并集**（`CollectPiecesForFrame(sampleAllChairFrames=True)`：
+       「各帧尺寸不一（3019632 实测 …）→ union 全部特效帧 → 画布尺寸稳定」）。
+       逐帧各算各的并集会让画布忽大忽小。
+    2. **每帧内容仍按自己的并集对齐**后再垫进统一画布，所以角色在自己格子里
+       位置固定、椅子也按各自 origin 摆正——不会出现「上边 0/1/12/7/20 来回跳」。
+
+    返回 ``(frames, delays)``；``frames[i]`` 尺寸全部相同。
+    """
+    placements, count = chair_placements(chair, chair_id, navel_px, has_sit_action)
+    if not count:
+        return [char_img], []
+
+    # 照 minipet `CollectPiecesForFrame(sampleAllChairFrames=True)`：
+    # 「各帧尺寸不一（3019632 实测 …）→ union 全部特效帧 → **画布尺寸稳定**」。
+    # 画布取全部帧的并集，**每帧内容按自己的并集对齐**后再垫进统一画布 ——
+    # 这样格子尺寸恒定、角色在自己格子里的位置也恒定。
+    boxes = [_bbox(char_img, layers) for layers in placements]
+    ux0 = min(b[0] for b in boxes)
+    uy0 = min(b[1] for b in boxes)
+    ux1 = max(b[2] for b in boxes)
+    uy1 = max(b[3] for b in boxes)
+
+    frames = []
+    for layers, box in zip(placements, boxes):
+        tile = render_chair_frame(char_img, layers, box)
+        canvas = Image.new("RGBA", (ux1 - ux0, uy1 - uy0), (0, 0, 0, 0))
+        canvas.alpha_composite(tile, (box[0] - ux0, box[1] - uy0))
+        frames.append(canvas)
+
+    base_frames = chair["layers"][0]["frames"] if chair["layers"] else []
+    delays = [int(base_frames[i]["delay"]) if i < len(base_frames) else 210
+              for i in range(count)]
+    return frames, delays
+
+
+def compose_with_chair(char_img: Image.Image, navel_px: Tuple[int, int],
+                       chair: Dict[str, Any], chair_id: str,
+                       frame_index: int = 0,
+                       has_sit_action: bool = True) -> Image.Image:
+    """合成**单帧**（保留给面板静态预览用）。多帧走 `compose_chair_animation`。"""
+    frames, _d = compose_chair_animation(char_img, navel_px, chair, chair_id, has_sit_action)
+    if not frames:
+        return char_img
+    return frames[min(frame_index, len(frames) - 1)]
 
 
 def _compose_with_chair_old(char_img: Image.Image, navel_px: Tuple[int, int],
