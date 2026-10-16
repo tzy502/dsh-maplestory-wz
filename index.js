@@ -1291,10 +1291,14 @@ export function apply(ctx, rawConfig = {}) {
     maxLeg: numOr(rawConfig.maxLeg, 420),
     edgeInset: numOr(rawConfig.edgeInset, 8),
   };
+  // 两套动作**不能混用**（用户口径：「纸娃娃和 mob 的动作不一样 不要混用」）：
+  // 怪物没有 `sit`（椅子只作用于纸娃娃的坐姿），纸娃娃也没有怪物的全部动作。
+  // 所以基础动作表两种模式共用，而 `sit` 只在纸娃娃模式下追加。
   const petActions = Array.isArray(rawConfig.actions) && rawConfig.actions.length
     ? rawConfig.actions.map(String)
-    // 带上 sit：坐椅子时客户端会把动作钉在 sit（用户口径：上椅子后不动）
-    : ['stand', 'move', 'hit1', 'fly', 'die', 'sit'];
+    : ['stand', 'move', 'hit1', 'fly', 'die'];
+  /** 纸娃娃模式额外要 `sit`（坐椅子用；只有 1 帧，坐下来就静止）。 */
+  const CHARA_EXTRA_ACTIONS = ['sit'];
     
   const petEquipsDefault = Array.isArray(rawConfig.equips) && rawConfig.equips.length
     ? rawConfig.equips.map(String)
@@ -1376,11 +1380,14 @@ export function apply(ctx, rawConfig = {}) {
     async pet(args = {}) {
       if (!args.id && !petConfigLoaded) { await loadPetConfig(); petConfigLoaded = true; }
       const id = String(args.id ?? currentMobId);
-      const want = Array.isArray(args.actions) && args.actions.length ? args.actions.map(String) : petActions;
-      const originFallback = args.originFallback === 'topleft' ? 'topleft'
-        : args.originFallback === 'center' ? 'center' : petConfig.originFallback;
       // 纸娃娃模式：逐帧合成角色图，产物结构与怪物一致，客户端不用改渲染
       const mode = args.mode ?? currentMode;
+      // 动作按模式给：`sit` 只属于纸娃娃（否则怪物模式会请求一个不存在的动作）
+      const want = Array.isArray(args.actions) && args.actions.length
+        ? args.actions.map(String)
+        : (mode === 'chara' ? [...petActions, ...CHARA_EXTRA_ACTIONS] : petActions);
+      const originFallback = args.originFallback === 'topleft' ? 'topleft'
+        : args.originFallback === 'center' ? 'center' : petConfig.originFallback;
       // 优先级：显式传参 > 纸娃娃面板的配置 > 自身旧配置。
       // 用户口径：「那边怎么改桌宠的配置就和修改的一致」——所以默认吃纸娃娃的配置。
       const fromDoll = dollEquips();

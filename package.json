@@ -34,6 +34,14 @@
     "py/pet_worker.py",
     "README.md",
     "icon.svg",
-    "tools"
-  ]
+    "tools",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tzy502/dsh-maplestory-wz.git"
+  },
+  "homepage": "https://github.com/tzy502/dsh-maplestory-wz"
 }
