@@ -2167,6 +2167,9 @@ window.__ModuleLoader__.load({
       const [candidates, setCandidates] = useState([]);
       const [pickErr, setPickErr] = useState(null);
       const [busy, setBusy] = useState(false);
+      // 换宠面板的加载态：打开面板、输入搜索词、切换纸娃娃/怪物都会发请求，
+      // 此前**没有任何提示** —— 候选列表在返回前是空的，看起来像「面板坏了/空白」。
+      const [pickLoading, setPickLoading] = useState(false);
       // 地图行走：{graph, seg, cfg} —— 背景地图开着且拿到 foothold 时启用
       const walkRef = useRef(null);
       // 地图行走总开关：**默认关**（用户口径：桌宠不用跟着地图走，随意走）。
@@ -2201,9 +2204,11 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!pickerOpen) return undefined;
         let alive = true;
+        setPickLoading(true);
         callApi('presets', {})
-          .then((d) => alive && setCandidates(d.presets || []))
-          .catch((e) => alive && setPickErr(String(e.message || e)));
+          .then((d) => { if (alive) setCandidates(d.presets || []); })
+          .catch((e) => { if (alive) setPickErr(String(e.message || e)); })
+          .finally(() => { if (alive) setPickLoading(false); });
         return () => { alive = false; };
       }, [pickerOpen]);
 
@@ -2211,12 +2216,16 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!pickerOpen) return undefined;
         const q = query.trim();
-        if (!q) return undefined;
+        // 清空搜索框要**先复位 loading**，否则上一次搜索的 true 会卡住
+        // （这个 effect 在 q 为空时直接 return，没人再把它设回 false）。
+        if (!q) { setPickLoading(false); return undefined; }
         let alive = true;
+        setPickLoading(true);
         const timer = setTimeout(() => {
           callApi('search', { query: q, limit: 30 })
-            .then((d) => alive && setCandidates(d.hits || []))
-            .catch((e) => alive && setPickErr(String(e.message || e)));
+            .then((d) => { if (alive) setCandidates(d.hits || []); })
+            .catch((e) => { if (alive) setPickErr(String(e.message || e)); })
+            .finally(() => { if (alive) setPickLoading(false); });
         }, 250);
         return () => { alive = false; clearTimeout(timer); };
       }, [query, pickerOpen]);
@@ -2741,6 +2750,8 @@ window.__ModuleLoader__.load({
       };
 
       return el('div', { style: layerStyle, 'data-desktop-pet': 'layer' },
+        // 换宠面板的加载转圈动画（内联注入一次，key 固定所以不会重复累积）
+        el('style', { key: 'petSpin', dangerouslySetInnerHTML: { __html: '@keyframes msWzSpin{to{transform:rotate(360deg)}}' } }),
         el('div', {
           style: petStyle,
           'data-desktop-pet': 'pet',
@@ -2794,8 +2805,22 @@ window.__ModuleLoader__.load({
               }),
               pickErr ? el('div', { style: { padding: '0 10px 6px', color: 'var(--dsw-alias-state-error-primary, #f66)' } }, pickErr) : null,
               el('div', { style: { overflow: 'auto', flex: 1, paddingBottom: 6 } },
-                candidates.length === 0
-                  ? el('div', { style: { padding: '4px 10px', opacity: 0.6 } }, query ? '没有匹配的怪物' : '读取候选…')
+                pickLoading
+                  ? el('div', { style: { padding: '10px', opacity: 0.75, display: 'flex', gap: 8, alignItems: 'center' } },
+                      // 纯 CSS 转圈：不引任何图标包，颜色跟主题走
+                      el('span', {
+                        style: {
+                          width: 13, height: 13, flex: '0 0 auto',
+                          border: '2px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+                          borderTopColor: 'var(--dsw-alias-brand-primary, #4a8cff)',
+                          borderRadius: '50%',
+                          animation: 'msWzSpin .7s linear infinite',
+                        },
+                      }),
+                      el('span', null, query.trim() ? '搜索中…' : '读取候选…'))
+                  : candidates.length === 0
+                  ? el('div', { style: { padding: '4px 10px', opacity: 0.6 } },
+                      query.trim() ? '没有匹配的怪物' : '暂无候选')
                   : candidates.map((c) => el('div', {
                       key: c.id,
                       style: { ...rowStyle, background: String(c.id) === String(data.id) ? 'var(--dsw-alias-bg-layer-2, rgba(255,255,255,.08))' : 'transparent' },
