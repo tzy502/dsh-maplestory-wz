@@ -15,4 +15,9 @@
       <Private>true</Private>
     </Reference>
   </ItemGroup>
+  <ItemGroup>
+    <!-- 文字光栅化（聊天气泡）与少量高级合成；本机 NuGet 缓存已有，离线可还原 -->
+    <PackageReference Include="SkiaSharp" Version="3.119.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="3.119.0" />
+  </ItemGroup>
 </Project>

@@ -13,7 +13,7 @@ using WzComparerR2.WzLib;
 
 namespace WzWorker;
 
-internal static class Program
+internal static partial class Program
 {
     private static string _dataDir = "";
     private static string _region = "BMS";
