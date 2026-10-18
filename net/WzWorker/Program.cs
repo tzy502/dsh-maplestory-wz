@@ -64,6 +64,7 @@ internal static class Program
         "search" => CmdSearch(args),
         "get" => CmdGet(args),
         "msPacks" => CmdMsPacks(),
+        "image" => CmdImage(args),
         "ping" => new JsonObject { ["engine"] = "wzlib", ["data_dir"] = _dataDir },
         _ => throw new NotSupportedException($"wzlib worker 暂不支持命令：{cmd}"),
     };
@@ -267,6 +268,26 @@ internal static class Program
         return node;
     }
 
+    /// <summary>
+    /// 解出这一帧真正的画布节点。这份客户端把像素放在 `_Canvas/` 仓库里，
+    /// 帧节点只有 origin/delay 和一个 `_outlink`（内部链接），不跟过去就只剩空节点
+    /// （实测直接取帧节点会得到 1×1）。
+    /// </summary>
+    private static Wz_Node ResolveCanvas(Wz_Node node)
+    {
+        var link = node.FindNodeByPath("_outlink", true)?.Value as string
+                ?? node.FindNodeByPath("_inlink", true)?.Value as string;
+        if (string.IsNullOrWhiteSpace(link)) return node;
+
+        var segs = link.Replace('\\', '/').Trim('/').Split('/', 2);
+        var root = FindTop(segs[0]);
+        if (root is null || segs.Length < 2) return node;
+        var target = root.FindNodeByPath(segs[1].Replace('/', '\\'), true);
+        if (target is null) return node;
+        // 目标是 .img 时还要展开
+        return target.Value is Wz_Image ? ExpandImage(target, link) : target;
+    }
+
     /// <summary>像不像一张图：任一子节点名是数字（WZ 里帧就是 0/1/2…）。</summary>
     private static bool IsImageLike(Wz_Node n) =>
         n.Nodes.Any(c => int.TryParse(c.Text, out _)) ||
@@ -320,6 +341,58 @@ internal static class Program
             ["kind"] = args["kind"]?.GetValue<string>() ?? "",
             ["animations"] = anims,
             ["nodes"] = body.Nodes.Count,
+        };
+    }
+
+    /// <summary>
+    /// 单帧原图直出 PNG（写文件）。给面板的 &lt;img&gt; 与验收脚本用。
+    /// args: path（如 Mob/1210102.img）、animation（动作名，缺省取第一个）、frame、out（输出目录）
+    /// </summary>
+    private static JsonNode CmdImage(JsonObject args)
+    {
+        var path = args["path"]?.GetValue<string>() ?? throw new InvalidOperationException("image 需要 path");
+        var anim = args["animation"]?.GetValue<string>();
+        var frameIdx = args["frame"]?.GetValue<int>() ?? 0;
+        var outDir = args["out"]?.GetValue<string>() ?? Path.GetTempPath();
+
+        var trimmed = path.Trim('/');
+        var segs = trimmed.Replace('\\', '/').Split('/', 2);
+        var pack = segs[0];
+        var rest = segs.Length > 1 ? segs[1] : "";
+        var root = FindTop(pack) ?? throw new FileNotFoundException($"没有这个分类：{pack}");
+        var node = rest.Length == 0 ? root : root.FindNodeByPath(rest.Replace('/', '\\'), true)
+            ?? throw new FileNotFoundException($"{path} 不存在");
+
+        var body = ExpandImage(node, path);
+        var animNode = anim is null
+            ? body.Nodes.FirstOrDefault(n => n.Nodes.Count > 0)
+            : body.FindNodeByPath(anim, true);
+        if (animNode is null) throw new FileNotFoundException($"{path} 里没有动作 {anim}");
+
+        var all = animNode.Nodes.ToList();
+        var target = all[Math.Clamp(frameIdx, 0, all.Count - 1)];
+        var resolved = ResolveCanvas(target);
+        var png = resolved.GetValue<Wz_Png>() ?? resolved.Value as Wz_Png
+            ?? throw new InvalidOperationException($"{path}/{animNode.Text}/{target.Text} 解不到画布（_outlink 目标缺失）");
+
+        var bmp = Png.Decode(png);
+        var origin = target.FindNodeByPath("origin")?.GetValueEx<Wz_Vector>(null);
+        var delay = target.FindNodeByPath("delay")?.GetValueEx<int>(0) ?? 0;
+
+        Directory.CreateDirectory(outDir);
+        var file = Path.Combine(outDir, $"img_{pack}_{Path.GetFileNameWithoutExtension(rest)}_{animNode.Text}_{target.Text}.png");
+        File.WriteAllBytes(file, Png.Encode(bmp));
+
+        return new JsonObject
+        {
+            ["png"] = file,
+            ["w"] = bmp.W,
+            ["h"] = bmp.H,
+            ["origin"] = new JsonArray(origin?.X ?? bmp.W / 2, origin?.Y ?? bmp.H / 2),
+            ["delay"] = delay,
+            ["animation"] = animNode.Text,
+            ["frame"] = target.Text,
+            ["engine"] = "wzlib",
         };
     }
 
