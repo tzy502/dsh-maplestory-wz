@@ -11,14 +11,14 @@ kind: "package-reference"
 
 读取本机已安装的冒险岛客户端的 WZ 文件，在 DSH 里直接使用 —— **不用数据库、不用起服务、
 仓库里也不含任何游戏素材**。host 半边提供十二个模型可见的工具和一条 HTTP 路由；
-一个 Python worker 常驻并预热 WZ 读取器，把 PNG / GIF 渲染到 `~/.dsh/wz-assets/`。
+一个 .NET worker 常驻并预热 WZ 读取器（WzComparerR2 的 WzLib），把 PNG / GIF 渲染到 `~/.dsh/wz-assets/`。
 Web 半边加了六个页签的面板（浏览、搜索、图鉴、纸娃娃、背景、资源），把页面背景换成会
 平移的游戏地图，并在界面上浮一只桌宠。
 
 渲染规则是**固定的、写进文档的**，不临时拍脑袋：聊天气泡按 origin 感知的九宫格平铺，
 椅子层级按带符号的 `z` 排序、锚点为 `navel − bodyRelMove`，纸娃娃脸型与 101 表情是同一
 图层的互斥变体，背景相机夹在地图内容边界内。验收是**像素级**而不是肉眼：
-`tools/verify-render.py` 拿渲染结果与基准图逐像素比对，`tools/verify.sh` 跑 22 项
+`tools/verify-render.mjs` 拿渲染结果与基准图逐像素比对，`tools/verify.sh` 跑 22 项
 端到端接口实测。
 
 属性是否可读**靠探测而不是假设**，因为各发行版的分卷结构不同 —— 在本插件开发所用的客户端上，
@@ -64,24 +64,16 @@ ln -s /Users/a502/IdeaProjects/dsh-maplestory-wz \
 | `dataDir` | — | 客户端的 `Data` 目录，**必填**（示例 `/path/to/MapleStory/Data`） |
 | `region` | `BMS` | 解密密钥名：国服客户端是 `BMS`，国际服 `GMS`，欧服 `EMS` |
 | `version` | `228` | WZ 版本号 |
-| `wzpyPath` | 自动探测 | 含 `wzpy/` 的克隆目录 |
-| `python` | 自动探测 | 带 Pillow、numpy 的解释器 |
 | `mobId` | `1210102` | 桌宠初始怪物 |
 | `scale` `speed` `flySpeed` `flyChance` | `1` `100` `60` `0.35` | 桌宠尺寸与运动 |
 
-**关于 `region`**：这个值就是 `wzpy` 的**解密密钥名**（插件没有自己写加解密，
-密钥表来自 `wzpy/crypto.py` 的 `WZ_IV`）。
+**关于 `region`**：这个值就是**解密密钥名**（加解密由 WzLib 负责，插件自己没有实现）。
 
-- **国服客户端 → `BMS`**。`wzpy` 里 `BMS` 对应的是**零 IV**（不做 AES 变换），
-  国服客户端用的正是这一套；`wzpy` 里没有 `CMS` 这个键，写 `CMS` 会抛 `KeyError`。
+- **国服客户端 → `BMS`**。`BMS` 对应的是**零 IV**（不做 AES 变换），国服客户端用的正是这一套。
 - 国际服 `GMS`，欧服 `EMS`。
 
 判断对不对：**字符串表能解出中文就是对的**（例如 `1210102` → `花蘑菇`）。
 
-解释器按这个顺序探测：`config.python` → `$WZ_PYTHON` →
-`~/.hermes/cache/scratch/wz-env/bin/python` → `/opt/homebrew/bin/python3` →
-`/usr/local/bin/python3` → `/usr/bin/python3`。worker 启动时会**清掉继承的 `PYTHONPATH`**，
-因为外来的 `site-packages` 会让 Pillow 导入失败。
 
 ### 让模型查数据
 
@@ -128,7 +120,7 @@ ln -s /Users/a502/IdeaProjects/dsh-maplestory-wz \
 齿轮按钮打开选择器，里面有常用怪物的快速选择 chip、纸娃娃、以及上次用的怪物。
 
 装上椅子后桌宠切成坐姿并**完全停止走动**；清空椅子则两者都恢复。椅子**不是角色部件** ——
-它住在 `Item/Install`，在面板里有自己的搜索框，由 `py/chair_support.py` 解析。
+它住在 `Item/Install`，在面板里有自己的搜索框，由 `net/WzWorker` 解析。
 
 <a id="截图"></a>
 ## 截图
@@ -153,7 +145,7 @@ ln -s /Users/a502/IdeaProjects/dsh-maplestory-wz \
 
 ```text
 Web 面板 ──POST /dsh-maplestory-wz/api──┐
-                                        ├─► index.js ─► Python worker（wzpy 读 WZ）
+                                        ├─► index.js ─► .NET worker（WzLib 读 WZ）
 Agent 工具 ─────────────────────────────┘                    │
 图片 ──GET /dsh-maplestory-wz/file/<name>── ~/.dsh/wz-assets/ ◄┘
 ```
@@ -169,9 +161,9 @@ Agent 工具 ──────────────────────�
 
 | `engine` | 行为 |
 |---|---|
-| `auto`（缺省）| 机器上有 .NET 9 且 worker 已编译就用 WzLib，否则回退 Python 半边 |
+
 | `wzlib` | 强制 .NET 半边；缺 .NET 报错，便于排查 |
-| `wzpy` | 强制 Python 半边（wzpy，随包内置） |
+
 
 .NET 半边在 `net/WzWorker/`，编译一次即可：
 
@@ -180,7 +172,7 @@ bash tools/build-wzlib.sh          # 或 DOTNET=/path/to/dotnet bash tools/build
 ```
 
 它已经接管**纯读取类**命令（分类/目录树/搜索/图鉴信息/`.ms` 清单）；
-渲染类（精灵图、纸娃娃、椅子、地图、气泡）仍在 Python 半边，尚未迁移。
+
 
 **`.ms` 结构容器**由 WzLib 原生的 `LoadMsFile()` 读取：worker 启动时会把
 `Data/Packs/*.ms`、`*.mn` 一并载入，动作、`origin`、`delay` 都从里面取。
@@ -260,7 +252,7 @@ bash tools/build-wzlib.sh          # 或 DOTNET=/path/to/dotnet bash tools/build
    `pkill -f wz_worker.py` 或 `pkill -f pet_worker.py` 重启它。
 
 声称渲染或算法改动完成之前，先跑 `bash tools/verify.sh` 与
-`python tools/verify-render.py`。渲染检查器会拿 C# 基准图比对、对像素漂移判失败；
+`node tools/verify-render.mjs`。渲染检查器会拿 C# 基准图比对、对像素漂移判失败；
 它存在的原因是**肉眼检查反复漏掉真实缺陷**。
 
 </details>

@@ -11,7 +11,7 @@ English | [中文](README.md)
 
 Read the WZ files of a MapleStory client installed on this machine and use them from DSH,
 with no database, no network service, and no bundled artwork. The host half exposes twelve
-model-visible tools and one HTTP route; a Python worker keeps the WZ readers warm and
+model-visible tools and one HTTP route; a .NET worker keeps the WZ readers warm and
 renders PNG and GIF output into `~/.dsh/wz-assets/`. The Web half adds a six-tab panel
 (browse, search, catalog, paper doll, background, resources), replaces the page background
 with a scrolling game map, and floats a desktop pet above the UI.
@@ -20,7 +20,7 @@ Rendering follows fixed, documented rules rather than ad-hoc choices: chat ballo
 origin-aware 9-slice tiling, chair layers are ordered by a signed `z` with the anchor at
 `navel − bodyRelMove`, paper-doll face and 101-expression are mutually exclusive variants
 of one layer, and the background camera clamps to the map's content bounds. Acceptance is
-pixel-level rather than visual: `tools/verify-render.py` compares rendered output against
+pixel-level rather than visual: `tools/verify-render.mjs` compares rendered output against
 reference images, and `tools/verify.sh` exercises 22 end-to-end API checks.
 
 Property availability is probed rather than assumed, because pack layout differs between
@@ -69,15 +69,11 @@ Add the dependency to the profile's `package.json`, then set the data source in
 | `dataDir` | — | Client `Data` directory, required. Example: `/path/to/MapleStory/Data`. |
 | `region` | `BMS` | Decryption key name: `BMS` for the Chinese client, `GMS` international, `EMS` Europe. |
 | `version` | `228` | WZ version. |
-| `wzpyPath` | auto | Clone containing `wzpy/`. |
-| `python` | auto | Interpreter with Pillow and numpy. |
 | `mobId` | `1210102` | The pet's starting mob. |
 | `scale` `speed` `flySpeed` `flyChance` | `1` `100` `60` `0.35` | Pet sizing and motion. |
 
-**About `region`.** The value is the **decryption key name** used by `wzpy`
-(the plugin implements no crypto itself — the key table lives in `wzpy/crypto.py`).
 
-- **Chinese client → `BMS`.** In `wzpy`, `BMS` is the **zero IV** variant (no AES
+- **Chinese client → `BMS`.** `BMS` is the **zero IV** variant (no AES
   transform), which is what the Chinese client ships. There is no `CMS` key, so writing
   `CMS` raises `KeyError`.
 - International → `GMS`, Europe → `EMS`.
@@ -85,10 +81,6 @@ Add the dependency to the profile's `package.json`, then set the data source in
 To check: **the string tables decode to Chinese when the key is right**
 (`1210102` → `花蘑菇`).
 
-The interpreter is discovered in this order: `config.python`, `$WZ_PYTHON`,
-`~/.hermes/cache/scratch/wz-env/bin/python`, `/opt/homebrew/bin/python3`,
-`/usr/local/bin/python3`, `/usr/bin/python3`. The worker strips any inherited `PYTHONPATH`,
-because a foreign `site-packages` makes Pillow fail to import.
 
 ### Ask the model for data
 
@@ -140,7 +132,7 @@ quick-select chips for common mobs, the paper doll, and the last mob used.
 Equipping a chair switches the pet to the seated action and stops its walking entirely;
 clearing the chair restores both. A chair is not a character part — it lives in
 `Item/Install`, has its own search field in the panel, and is resolved by
-`py/chair_support.py`.
+`net/WzWorker`.
 
 <a id="screenshots"></a>
 ## Screenshots
@@ -168,7 +160,7 @@ Three layers are involved, and each has its own staleness rule.
 
 ```text
 Web panel ──POST /dsh-maplestory-wz/api──┐
-                                         ├─► index.js ─► Python worker (wzpy reads WZ)
+                                         ├─► index.js ─► .NET worker (WzLib reads WZ)
 Agent tools ─────────────────────────────┘                    │
 images ──GET /dsh-maplestory-wz/file/<name>── ~/.dsh/wz-assets/ ◄┘
 ```
@@ -185,9 +177,7 @@ halves speaking one protocol (one JSON per stdin line); `engine` picks which:
 
 | `engine` | Behaviour |
 |---|---|
-| `auto` (default) | Uses WzLib when .NET 9 and a built worker are present, otherwise the Python half |
 | `wzlib` | Forces the .NET half; fails loudly without .NET, which makes debugging easier |
-| `wzpy` | Forces the Python half (wzpy, vendored) |
 
 Build the .NET half once:
 
@@ -195,9 +185,6 @@ Build the .NET half once:
 bash tools/build-wzlib.sh
 ```
 
-It owns the pure reading commands (categories, tree, search, encyclopedia info, `.ms`
-listing); rendering (sprites, paper dolls, chairs, maps, balloons) still lives in the
-Python half.
 
 **`.ms` containers** are read by WzLib's native `LoadMsFile()`: the worker loads
 `Data/Packs/*.ms` and `*.mn` at startup, so actions, `origin` and `delay` come from there.
@@ -288,7 +275,7 @@ Three layers cache aggressively, and each one has caused a false "my change did 
 3. Workers are spawned on first call and then reused. Restart them with
    `pkill -f wz_worker.py` or `pkill -f pet_worker.py`.
 
-Run `bash tools/verify.sh` and `python tools/verify-render.py` before claiming a rendering
+Run `bash tools/verify.sh` and `node tools/verify-render.mjs` before claiming a rendering
 or algorithm change is done. The render checker compares against C# reference images and
 fails on pixel drift; it exists because visual inspection missed real defects repeatedly.
 

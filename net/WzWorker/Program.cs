@@ -1,6 +1,6 @@
 // 冒险岛 WZ worker（.NET 半边）—— 用 WzComparerR2 的 WzLib 读数据。
 //
-// 协议与 py/wz_worker.py 逐字兼容：stdin 一行一个请求，stdout 一行一个响应。
+// 协议与 旧实现 逐字兼容：stdin 一行一个请求，stdout 一行一个响应。
 //   请求  {"id":<int>, "cmd":"packs", "args":{...}}
 //   响应  {"id":<int>, "ok":true, "data":{...}}
 //         {"id":<int>, "ok":false, "error":{"message":"...","type":"..."}}
@@ -64,12 +64,28 @@ internal static partial class Program
         "search" => CmdSearch(args),
         "get" => CmdGet(args),
         "msPacks" => CmdMsPacks(),
+        "ms_mob" => CmdMsMob(args),
+        "ms_stats" => CmdMsStats(),
         "image" => CmdImage(args),
         "frames" => CmdFrames(args),
         "sprite" => CmdSprite(args),
         "ping" => new JsonObject { ["engine"] = "wzlib", ["data_dir"] = _dataDir },
-        _ => throw new NotSupportedException($"wzlib worker 暂不支持命令：{cmd}"),
+        // 各组命令在 Commands.*.cs 里；命中不了再抛
+        _ => TryOther(cmd, args) ?? throw new NotSupportedException($"wzlib worker 暂不支持命令：{cmd}"),
     };
+
+    /// <summary>
+    /// 各组命令的汇总入口。每接一组就在这里加一行；
+    /// 返回 null 表示这组不认识该命令，继续试下一组。
+    /// </summary>
+    private static JsonNode? TryOther(string cmd, JsonObject args) =>
+        TryDispatchDetail(cmd, args) ??
+        TryDispatchChar(cmd, args) ??
+        TryDispatchChair(cmd, args) ??
+        TryDispatchBalloon(cmd, args) ??
+        TryDispatchMap(cmd, args) ??
+        TryDispatchPet(cmd, args) ??
+        TryDispatchCmsdl(cmd, args);
 
     // ── 载入 ────────────────────────────────────────────────────────────
     private static Wz_Structure Load()
@@ -145,7 +161,6 @@ internal static partial class Program
             ["region"] = _region,
             ["version"] = _version,
             ["engine"] = "wzlib",
-            ["wzpy"] = "",
             ["packs"] = packs,
         };
     }
@@ -497,7 +512,7 @@ internal static partial class Program
                 ["delay"] = r.Delay > 0 ? r.Delay : 100,
             });
         }
-        // Python 的 frame.w/h 是**并集画布**尺寸（不是最大单帧），对齐它
+        // 旧的 frame.w/h 是**并集画布**尺寸（不是最大单帧），对齐它
         var maxW = cellW;
         var maxH = cellH;
         var outObj = new JsonObject
@@ -525,6 +540,77 @@ internal static partial class Program
             outObj["gif_frames"] = gf;
         }
         return outObj;
+    }
+
+    /// <summary>
+    /// 一个怪物在结构容器里的形状。
+    ///
+    /// WzLib 的 LoadMsFile 会把 .ms 的内容并进普通 WZ 节点树（它只公开
+    /// WzStructure/FileStream，不单独给 .ms 的结构树），所以这里直接读合并后的树：
+    /// 能读到动作就说明这个怪物的结构来自 .ms 或 Mob.wz，对调用方是同一件事。
+    /// </summary>
+    private static JsonNode CmdMsMob(JsonObject args)
+    {
+        var id = (args["id"]?.GetValue<string>() ?? "").Trim();
+        if (id.Length == 0) throw new InvalidOperationException("ms_mob 需要 id");
+        var (path, node) = FindImg("mob", id);
+        if (node is null)
+        {
+            return new JsonObject
+            {
+                ["id"] = id, ["found"] = false,
+                ["near"] = new JsonArray(),
+                ["note"] = "结构来自 .ms；像素经 _outlink 取自 Mob/_Canvas",
+            };
+        }
+        var anims = new JsonObject();
+        var total = 0;
+        foreach (var a in node.Nodes)
+        {
+            if (a.Text is "info" or "mobInfo") continue;
+            var frames = new JsonArray();
+            foreach (var f in a.Nodes) frames.Add(int.TryParse(f.Text, out var n) ? n : 0);
+            if (frames.Count == 0)
+            {
+                var png = a.GetValue<Wz_Png>() ?? a.Value as Wz_Png;
+                if (png is null) continue;
+                frames.Add(0);
+            }
+            anims[a.Text] = frames;
+            total += frames.Count;
+        }
+        return new JsonObject
+        {
+            ["id"] = id,
+            ["found"] = true,
+            ["path"] = path,
+            ["animations"] = anims,
+            ["frames_total"] = total,
+            ["spine"] = null,
+            ["note"] = "结构来自 .ms；像素经 _outlink 取自 Mob/_Canvas",
+        };
+    }
+
+    /// <summary>已装结构容器的概览（.ms/.mn 文件清单 + 载入状态）。</summary>
+    private static JsonNode CmdMsStats()
+    {
+        var dir = Path.Combine(_dataDir, "Packs");
+        var opened = new JsonArray();
+        if (Directory.Exists(dir))
+        {
+            foreach (var f in Directory.GetFiles(dir).OrderBy(x => x, StringComparer.Ordinal))
+            {
+                var ext = Path.GetExtension(f).ToLowerInvariant();
+                if (ext is not (".ms" or ".mn")) continue;
+                opened.Add(new JsonObject
+                {
+                    ["file"] = Path.GetFileName(f),
+                    ["category"] = Path.GetFileNameWithoutExtension(f).Split('_')[0],
+                    ["mb"] = Math.Round(new FileInfo(f).Length / 1e6, 1),
+                });
+            }
+        }
+        return new JsonObject { ["opened"] = opened, ["cache_size"] = opened.Count, ["engine"] = "wzlib" };
     }
 
     /// <summary>Packs 目录下的 .ms / .mn 清单。</summary>

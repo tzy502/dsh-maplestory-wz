@@ -26,7 +26,7 @@ fi
 echo "    ✓ 已登录：$(npm --userconfig "$NPMRC" whoami --registry="$REG")"
 
 # 2) private 标志：npm 会拒绝发布 private 包
-if python3 -c "import json,sys; sys.exit(0 if json.load(open('package.json')).get('private') else 1)"; then
+if node -e "process.exit(JSON.parse(require('fs').readFileSync('package.json','utf8')).private?0:1)"; then
   echo "    ✗ package.json 里 private=true，npm 会拒绝发布。"
   echo "      改法：删掉 package.json 的 \"private\": true 这一行，然后重跑本脚本。"
   echo "      （本地安装用的是 link:，删掉它不影响本机已装好的 profile）"
@@ -35,16 +35,13 @@ fi
 echo "    ✓ 没有 private 标志"
 
 # 3) 必填元数据
-python3 - <<'PY'
-import json, sys
-j = json.load(open('package.json', encoding='utf-8'))
-need = ['name', 'version', 'license', 'repository', 'description']
-miss = [k for k in need if not j.get(k)]
-if miss:
-    print(f'    ✗ 缺字段：{miss}')
-    sys.exit(1)
-print(f"    ✓ {j['name']}@{j['version']}  license={j['license']}")
-PY
+node -e "
+const j=JSON.parse(require('fs').readFileSync('package.json','utf8'));
+const need=['name','version','license','repository','description'];
+const miss=need.filter(k=>!j[k]);
+if(miss.length){console.log('    ✗ 缺字段：'+JSON.stringify(miss));process.exit(1);}
+console.log('    ✓ '+j.name+'@'+j.version+'  license='+j.license);
+"
 
 # 4) 打包清单（files 白名单是否把该带的都带上）
 echo
@@ -63,15 +60,12 @@ npm --userconfig "$NPMRC" publish --registry="$REG" --access public
 echo
 echo "==> 验证（等镜像同步几秒）"
 sleep 5
-curl -s -m 30 "https://registry.npmjs.org/$(python3 -c "import json;print(json.load(open('package.json'))['name'])")" \
-  | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print('    ✓ 已在 npm 上：', d['name'], d['dist-tags'])
-except Exception as e:
-    print('    ? 查询失败（可能还没同步）：', e)
-"
+curl -s -m 30 "https://registry.npmjs.org/$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json','utf8')).name)")" \
+  | node -e "
+let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+  try{const j=JSON.parse(s);console.log('    ✓ 已在 npm 上：',j.name,JSON.stringify(j['dist-tags']));}
+  catch(e){console.log('    ? 查询失败（可能还没同步）：',e.message);}
+});"
 echo
 echo "市场安装命令："
-echo "    dsh plugin --profile web add $(python3 -c "import json;print(json.load(open('package.json'))['name'])")"
+echo "    dsh plugin --profile web add $(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json','utf8')).name)")"

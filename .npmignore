@@ -1,11 +1,11 @@
 # 用黑名单而不是 package.json 的 files 白名单：
-# 运行时要用的文件分散在 lib/ 与 py/ 里（lib/cmsdl.js、py/chair_support.py 等），
-# 白名单一旦漏列某个 import → 装上后插件直接起不来（且市场构建不跑构建步骤）。
-# 所以默认全部打包，只排除开发期垃圾。
+# 运行时要用的文件分散在 lib/、net/、vendor/ 里，
+# 白名单一旦漏列某个依赖 → 装上后插件直接起不来（市场构建不跑构建步骤）。
+# 所以默认全部打包，只排除开发期产物。
 
-# Python 缓存
-__pycache__/
-*.py[cod]
+# .NET 构建产物（用户侧用 tools/build-wzlib.sh 生成，仓库与包里都不带）
+net/WzWorker/bin/
+net/WzWorker/obj/
 
 # 编辑器 / 系统
 .DS_Store

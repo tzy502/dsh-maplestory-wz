@@ -981,7 +981,7 @@ window.__ModuleLoader__.load({
      * 纸娃娃：给部位挑编号，实时合成角色帧。
      * 与 mapleStoryMiniPet 的 CharaSim 同一套合成语义（zmap 排层）。
      */
-    // wzpy 的 CATEGORIES 一共 16 类，面板要全部放出来（之前只放 12 类，
+    // 数据源一共 16 个分类，面板要全部放出来（之前只放 12 类，
     // 漏了套服/脸饰/眼镜/耳环，用户反馈「素材少了」就是这个）。
     const CHAR_SLOTS = [
       ['Body', '身体'], ['Head', '头'], ['Hair', '发型'], ['Face', '脸'],
@@ -1127,7 +1127,7 @@ window.__ModuleLoader__.load({
       const render = useCallback(() => {
         const list = CHAR_SLOTS.map(([k]) => equips[k]).filter(Boolean);
         setBusy(true); setErr(null);
-        // 椅子单独传（它不是 Character 部件，混进 equips 会让 wzpy 找不到而整只渲染失败）
+        // 椅子单独传（它不是 Character 部件，混进 equips 会让渲染器找不到而整只渲染失败）
         callApi('charRender', { equips: list, pose, flip, chairId: equips.Chair || '' })
           .then(setImg)
           .catch((e) => setErr(String(e.message)))
@@ -1970,7 +1970,7 @@ window.__ModuleLoader__.load({
         el('div', { style: S.status },
           el('span', null, packs ? `数据源 ${packs.data_dir}` : '读取数据源…'),
           // 状态栏不再显示 `${region} v${version}`（用户要求去掉版本号）
-          packs ? el('span', null, `wzpy ${packs.wzpy}`) : null,
+          packs ? el('span', null, `engine ${packs.engine || 'wzlib'}`) : null,
           el('span', { style: { marginLeft: 'auto' } }),
           el('span', null, mode === 'browse'
             ? `浏览 ${pack}${path ? `/${path}` : ''}`
@@ -2579,7 +2579,7 @@ window.__ModuleLoader__.load({
         let alive = true;
         setPickLoading(true);
         const timer = setTimeout(() => {
-          callApi('search', { query: q, limit: 30 })
+          callApi('petSearch', { query: q, limit: 30 })
             .then((d) => { if (alive) setCandidates(d.hits || []); })
             .catch((e) => { if (alive) setPickErr(String(e.message || e)); })
             .finally(() => { if (alive) setPickLoading(false); });

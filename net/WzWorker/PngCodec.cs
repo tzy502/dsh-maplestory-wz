@@ -29,7 +29,7 @@ internal sealed class Bitmap32
         Px = px;
     }
 
-    /// <summary>最近邻放大（与 Python 侧 Image.NEAREST 一致，逐像素整数倍）。</summary>
+    /// <summary>最近邻放大（与 旧实现 Image.NEAREST 一致，逐像素整数倍）。</summary>
     public Bitmap32 Scale(int k)
     {
         if (k <= 1) return this;

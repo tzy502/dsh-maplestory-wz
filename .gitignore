@@ -18,3 +18,5 @@ __pycache__/
 # .NET worker 的构建产物（由 net/WzWorker 自行 dotnet build 生成）
 net/WzWorker/bin/
 net/WzWorker/obj/
+# dist/ 是随包发布的预编译产物，必须进仓库
+!net/WzWorker/dist/

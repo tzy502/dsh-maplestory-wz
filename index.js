@@ -2,7 +2,7 @@
  * 冒险岛 WZ 资源插件 —— Host 半边。
  *
  * 结构：
- *   Python worker（py/wz_worker.py，基于 wzpy 读本地 WZ 数据源）
+ *   .NET worker（net/WzWorker，基于 WzComparerR2 的 WzLib 读本地 WZ 数据源）
  *     ⇅ JSON-line over stdio
  *   Host 插件（本文件）
  *     ├─ 工具：wz_packs / wz_tree / wz_search / wz_sprite / wz_item
@@ -10,7 +10,7 @@
  *     ├─ HTTP：/dsh-maplestory-wz/image?...        单帧/图标直出 PNG
  *     └─ HTTP：/dsh-maplestory-wz/api          面板数据接口（packs/tree/detail/sprite…）
  *
- * 「资源更新」（cmsdl）：host 侧执行器在 ./lib/cmsdl.js，命令面在 py/cmsdl_support.py。
+ * 「资源更新」（cmsdl）：host 侧执行器在 ./lib/cmsdl.js，命令构造在 net/WzWorker/Commands.Cmsdl.cs。
  *
  * 数据一切从本地 WZ 走：无数据库、无硬编码资源。
  */
@@ -25,7 +25,6 @@ import { fileURLToPath } from 'node:url';
 import { createCmsdlManager } from './lib/cmsdl.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const WORKER = join(HERE, 'py', 'wz_worker.py');
 const ROUTE_PREFIX = '/dsh-maplestory-wz';
 // 不设本机默认数据目录：硬编码某台机器的路径对别人无意义，
 // 还会把「没配 dataDir」表现成「路径不存在」这种难查的现象。
@@ -45,7 +44,6 @@ function numOr(value, fallback) {
 
 // ── 桌面宠物（原 @local/dsh-desktop-pet）───────────────────────────────
 // 路径全部**保持与合并前一致**，这样已存在的产物与配置不用迁移。
-const PET_WORKER = join(HERE, 'py', 'pet_worker.py');
 /** pet worker 的输出目录（~/.dsh/desktop-pet）。 */
 const PET_OUT_DIR = join(homedir(), '.dsh', 'desktop-pet');
 const PET_CONFIG = join(PET_OUT_DIR, 'pet-config.json');
@@ -54,20 +52,6 @@ function optsOutDir(prefix, wzOutDir) {
   return prefix === 'PET' ? PET_OUT_DIR : wzOutDir;
 }
 
-// 解释器探测：配置/环境变量优先，再按平台找常见位置。
-// Windows 上没有常用的 `python3` 命令（是 `python` / `py`），漏了这几项会让
-// Windows 用户一装上就报「找不到 Python」。
-const PYTHON_CANDIDATES = [
-  process.env.WZ_PYTHON,
-  join(homedir(), '.hermes', 'cache', 'scratch', 'wz-env', 'bin', 'python'),
-  '/opt/homebrew/bin/python3',                                   // macOS Apple Silicon
-  '/usr/local/bin/python3',                                      // macOS Intel / Linux
-  '/usr/bin/python3',
-  join(homedir(), '.hermes', 'cache', 'scratch', 'wz-env', 'Scripts', 'python.exe'),
-  'py',                                                          // Windows launcher
-  'python',
-  'python3',
-];
 
 // WzLib 半边的解释器（.NET）。用户机器上 dotnet 未必在 PATH，按候选逐个试；
 // DOTNET_ROOT 也会影响 apphost 找运行时，所以一并作为候选来源。
@@ -85,32 +69,31 @@ const DOTNET_CANDIDATES = [
 // 便于将来换成自包含发布的单文件（那时用户不需要装 .NET）。
 function resolveWzLibWorker(config) {
   if (config?.wzlibWorker) return config.wzlibWorker;
-  const base = join(HERE, 'net', 'WzWorker', 'bin');
-  for (const cfg of ['Release', 'Debug']) {
-    for (const f of ['wzworker.dll', 'wzworker']) {
-      const p = join(base, cfg, 'net9.0', f);
-      if (existsSync(p)) return p;
-    }
-  }
-  return '';
+  const root = join(HERE, 'net', 'WzWorker');
+  // dist/ 是随包发布的预编译产物（用户不必装 SDK）；bin/ 是本地开发编译的。
+  const candidates = [
+    join(root, 'dist', 'wzworker.dll'),
+    join(root, 'dist', 'wzworker'),
+    join(root, 'bin', 'Release', 'net9.0', 'wzworker.dll'),
+    join(root, 'bin', 'Debug', 'net9.0', 'wzworker.dll'),
+    join(root, 'bin', 'Release', 'net9.0', 'wzworker'),
+  ];
+  return candidates.find((p) => existsSync(p)) ?? '';
 }
 
 export const inject = ['tools', 'webServer'];
 
-/** 与 Python worker 的一问一答通道。 */
+/** 与 .NET worker 的一问一答通道（stdin/stdout 各一行 JSON）。 */
 class WzWorker {
   /**
-   * @param {object} config  插件配置（dataDir/region/version/python/wzpyPath…）
+   * @param {object} config  插件配置（dataDir/region/version/dotnet/wzlibWorker…）
    * @param {object} logger
    * @param {{script?: string, envPrefix?: string, id?: string}} [opts]
-   *   合并 dsh-desktop-pet 后本类要同时驱动两个 Python worker（wz / pet）。
+   *   合并 dsh-desktop-pet 后本类要同时驱动两个 worker 实例（主/桌宠）。
    *   两者的启动/通信/退出逻辑逐行相同，只差「脚本路径」与「环境变量前缀」，
    *   所以这里把它们参数化，而不是复制一份 PetWorker（复制会出现两份要同步维护的实现）。
    */
   constructor(config, logger, opts = {}) {
-    this.script = opts.script || WORKER;
-    // 'python'（wzpy）| 'dotnet'（WzLib）：协议一致，只有启动命令不同
-    this.backend = opts.backend || 'python';
     this.envPrefix = opts.envPrefix || 'WZ';
     this.id = opts.id || 'maplestory-wz';
     this.config = config;
@@ -132,35 +115,24 @@ class WzWorker {
     return 'dotnet';
   }
 
-  resolvePython() {
-    if (this.config.python) return this.config.python;
-    for (const cand of PYTHON_CANDIDATES) {
-      if (cand && existsSync(cand)) return cand;
-    }
-    return 'python3';
-  }
-
   async start() {
     if (this.startPromise) return this.startPromise;
     this.startPromise = (async () => {
-      const python = this.resolvePython();
       const env = { ...process.env };
-      // hermes 注入的 PYTHONPATH 会把 3.14 的 site-packages 塞给 3.11 解释器 → PIL 崩
-      delete env.PYTHONPATH;
-      env.PYTHONUNBUFFERED = '1';
-      env.PYTHONDONTWRITEBYTECODE = '1';
       const P = this.envPrefix;
+      // .NET 半边只读 WZ_DATA_DIR；桌宠实例用 PET_ 前缀传，所以两个都写，
+      // 否则桌宠 worker 拿不到数据目录会直接报「没有配置数据目录」。
       env[`${P}_DATA_DIR`] = this.config.dataDir;
+      env.WZ_DATA_DIR = this.config.dataDir;
       env[`${P}_REGION`] = this.config.region || 'BMS';
       env[`${P}_VERSION`] = String(this.config.version ?? 228);
       env[`${P}_OUT_DIR`] = optsOutDir(this.envPrefix, OUT_DIR);
-      if (this.config.wzpyPath) env.WZPY_PATH = this.config.wzpyPath;
-      // cmsdl 探测用：显式指定二进制路径 / 存放目录（py/cmsdl_support.py 读这两个变量）
+      // cmsdl 探测用：显式指定二进制路径 / 存放目录
       if (this.config.cmsdlPath) env.WZ_CMSDL = this.config.cmsdlPath;
       if (this.config.cmsdlDir) env.WZ_CMSDL_DIR = this.config.cmsdlDir;
 
       let child;
-      if (this.backend === 'dotnet') {
+      {
         const dotnet = this.resolveDotnet();
         const worker = resolveWzLibWorker(this.config);
         if (!worker) {
@@ -168,11 +140,8 @@ class WzWorker {
         }
         // apphost 需要 DOTNET_ROOT 才能找到运行时；给一个已知可用的根兜底
         if (!env.DOTNET_ROOT && existsSync('/Volumes/SSD/C#/dotnet')) env.DOTNET_ROOT = '/Volumes/SSD/C#';
-        // 用 dotnet <dll> 启动比直接跑 apphost 稳（后者强依赖 DOTNET_ROOT 猜对）
         const argv = worker.endsWith('.dll') ? [worker] : [];
         child = spawn(dotnet, argv, { env, stdio: ['pipe', 'pipe', 'pipe'] });
-      } else {
-        child = spawn(python, [this.script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
       }
       this.child = child;
       child.stdout.setEncoding('utf8');
@@ -193,31 +162,7 @@ class WzWorker {
         this.startPromise = null;
       });
       const info = await this.call('stats');
-      this.logger.info?.(`worker 就绪 python=${python} data=${info.data_dir} region=${info.region} v${info.version}`);
-      // 与磁盘上的 py 源码比对指纹：不一致说明这个常驻 worker 跑的是旧代码
-      // （改完 .py 没重启 worker 就会这样），直接说清楚，别让人对着旧结果猜。
-      try {
-        const fs = await import('node:fs/promises');
-        const { createHash } = await import('node:crypto');
-        const here = dirname(fileURLToPath(import.meta.url));
-        const pyDir = join(here, 'py');
-        const names = (await fs.readdir(pyDir)).filter((n) => n.endsWith('.py')).sort();
-        const disk = {};
-        for (const name of names) {
-          const buf = await fs.readFile(join(pyDir, name));
-          disk[name] = createHash('sha1').update(buf).digest('hex').slice(0, 12);
-        }
-        const stale = Object.keys(disk).filter((n) => info.fingerprint?.[n] && info.fingerprint[n] !== disk[n]);
-        this.staleSources = stale;
-        if (stale.length) {
-          this.logger.warn?.(
-            `WZ worker 跑的是旧代码（${stale.join(', ')} 已在磁盘上更新）；` +
-            '执行 `pkill -f wz_worker.py` 让它按需重启即可生效',
-          );
-        }
-      } catch {
-        /* 指纹比对只是诊断，失败不影响功能 */
-      }
+      this.logger.info?.(`worker 就绪 engine=wzlib data=${info.data_dir} region=${info.region} v${info.version}`);
       return info;
     })();
     return this.startPromise;
@@ -313,58 +258,38 @@ export function apply(ctx, rawConfig = {}) {
   const logger = ctx.logger ?? console;
   const config = {
     dataDir: typeof rawConfig.dataDir === 'string' && rawConfig.dataDir ? rawConfig.dataDir : DEFAULT_DATA_DIR,
-    wzpyPath: typeof rawConfig.wzpyPath === 'string' ? rawConfig.wzpyPath : undefined,
-    python: typeof rawConfig.python === 'string' ? rawConfig.python : undefined,
     region: typeof rawConfig.region === 'string' && rawConfig.region ? rawConfig.region : 'BMS',
     version: Number.isFinite(rawConfig.version) ? Number(rawConfig.version) : 228,
     cmsdlPath: typeof rawConfig.cmsdlPath === 'string' && rawConfig.cmsdlPath ? rawConfig.cmsdlPath : undefined,
     cmsdlDir: typeof rawConfig.cmsdlDir === 'string' && rawConfig.cmsdlDir ? join(rawConfig.cmsdlDir) : CMSDL_DIR,
-    // WZ 读取引擎：'wzpy'（Python 半边，缺省）| 'wzlib'（.NET 半边，WzComparerR2）
     engine: typeof rawConfig.engine === 'string' && rawConfig.engine ? rawConfig.engine.toLowerCase() : 'auto',
     dotnet: typeof rawConfig.dotnet === 'string' && rawConfig.dotnet ? rawConfig.dotnet : undefined,
     wzlibWorker: typeof rawConfig.wzlibWorker === 'string' && rawConfig.wzlibWorker ? rawConfig.wzlibWorker : undefined,
   };
-  const worker = new WzWorker(config, logger);
 
   // engine='wzlib' 时，**纯读取类**命令改由 .NET/WzLib 半边执行；
-  // 渲染类（sprite / char / map / balloon / chair）仍在 Python 半边 —— 那些还没迁。
   // 路由放在这一层而不是各 setter 里，是为了让调用方完全无感。
-  const wanted = String(config.engine || 'auto').toLowerCase();
-  const wziLibCommands = new Set(['packs', 'tree', 'search', 'get', 'packs_ms', 'msPacks', 'ping', 'frames', 'sprite', 'image']);
+  const wziLibCommands = new Set([
+    'packs', 'tree', 'search', 'get', 'msPacks', 'packs_ms', 'ping',
+    'frames', 'sprite', 'image',
+    'detail', 'detail_page', 'sources', 'stats',
+    'char_parts', 'char_render', 'char_anim', 'char_poses', 'char_ears',
+    'chair_list', 'chair_render',
+    'balloon', 'balloon_styles',
+    'map_list', 'map_random', 'map_featured', 'map_next', 'map_detail',
+    'map_image', 'map_canvas', 'map_minimap', 'map_content_bounds', 'map_viewport_b64',
+    'cmsdl_probe', 'cmsdl_plan', 'cmsdl_status', 'cmsdl_start',
+  ]);
 
-  // engine:
-  //   'auto'（缺省）—— 机器上有 .NET 且 worker 已编译就用 WzLib，否则回退 Python
-  //   'wzlib'       —— 强制 WzLib（缺 .NET 时报错，便于排查）
-  //   'wzpy'        —— 强制 Python 半边
-  const dotnetReady = (() => {
-    if (wanted === 'wzpy') return false;
-    if (!resolveWzLibWorker(config)) return false;
-    const cand = config.dotnet || DOTNET_CANDIDATES.find((c) => c && (c === 'dotnet' || existsSync(c)));
-    if (!cand) return false;
-    // 'dotnet' 是 PATH 上的名字，交给 spawn 去解析；其余必须是真实文件
-    return cand === 'dotnet' ? true : existsSync(cand);
-  })();
-  const useWzLib = wanted === 'wzpy' ? false : (wanted === 'wzlib' ? true : dotnetReady);
-  if (wanted === 'wzlib' && !dotnetReady) {
-    logger.warn?.('engine=wzlib 但找不到 .NET 或 worker 未编译，将回退 wzpy');
-  }
-  config.engineResolved = useWzLib ? 'wzlib' : 'wzpy';
-  const libWorker = useWzLib
-    ? new WzWorker(config, logger, { backend: 'dotnet', id: 'maplestory-wz-lib' })
-    : null;
+  // WZ 读取只有一条路：WzComparerR2 的 WzLib（.NET 半边）。
+  // 渲染命令也分批迁到了同一半边，这里不再有第二种实现。
+  const libWorker = new WzWorker(config, logger, { id: 'maplestory-wz-lib' });
 
-  // 统一出口：读命令按 engine 分流，其余一律走 Python
-  const callWz = async (cmd, args) => {
-    if (libWorker && wziLibCommands.has(cmd)) {
-      // 两个半边的命令名有小写差异（python 用 packs_ms，.NET 用 msPacks）
-      const mapped = cmd === 'packs_ms' ? 'msPacks' : cmd;
-      return libWorker.call(mapped, args);
-    }
-    return worker.call(cmd, args);
-  };
+  // 统一出口：所有命令都转给 .NET 半边
+  const callWz = async (cmd, args) => libWorker.call(cmd === 'packs_ms' ? 'msPacks' : cmd, args);
   /** cmsdl 资源更新：下载 cmsdl 本体 + 跑 cmsdl，进度写内存供面板轮询。 */
   const cmsdl = createCmsdlManager({
-    worker,
+    worker: libWorker,
     logger,
     dataDir: config.dataDir,
     cmsdlDir: config.cmsdlDir,
@@ -372,8 +297,7 @@ export function apply(ctx, rawConfig = {}) {
   /** cmsdl_probe 的 host 侧缓存标记（真正结果在 cmsdl 管理器里）。 */
   const cmsdlState = { tool: false, at: 0 };
 
-  ctx.effect(() => () => worker.dispose(), 'maplestory-wz: worker');
-  if (libWorker) ctx.effect(() => () => libWorker.dispose(), 'maplestory-wz: wzlib worker');
+  ctx.effect(() => () => libWorker.dispose(), 'maplestory-wz: worker');
   ctx.effect(() => () => cmsdl.dispose(), 'maplestory-wz: cmsdl');
 
   // ── 面板数据接口（HTTP /api，Client 用 fetch）──────────────────────
@@ -465,42 +389,42 @@ export function apply(ctx, rawConfig = {}) {
       return { url: `${ROUTE_PREFIX}/image?${q.toString()}` };
     },
     async stats() {
-      return worker.call('stats');
+      return callWz('stats');
     },
     async detail(args) {
       const spec = args ?? {};
       const key = `${spec.kind ?? ''}:${spec.id ?? ''}:${spec.path ?? ''}`;
       const cached = detailCache.get(key);
       if (cached && Date.now() - cached.at < 120_000) return cached.value;
-      const value = await worker.call('detail', spec);
+      const value = await callWz('detail', spec);
       detailCache.set(key, { at: Date.now(), value });
       if (detailCache.size > 200) detailCache.delete(detailCache.keys().next().value);
       return value;
     },
     async sources(args) {
-      return worker.call('sources', args ?? {});
+      return callWz('sources', args ?? {});
     },
     // ── Packs/*.ms（结构 / Spine 骨骼；像素仍在 _Canvas）─────────────
     async msPacks() {
       return callWz('packs_ms', {});
     },
     async msMob(args) {
-      return worker.call('ms_mob', args ?? {});
+      return callWz('ms_mob', args ?? {});
     },
     async msStats() {
-      return worker.call('ms_stats', {});
+      return callWz('ms_stats', {});
     },
     // ── 聊天气泡（UI/ChatBalloon.img 九宫格）──────────────────────────
     async balloonStyles() {
       const key = 'balloonStyles';
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 600_000) return hit.value;
-      const value = await worker.call('balloon_styles', {});
+      const value = await callWz('balloon_styles', {});
       detailCache.set(key, { at: Date.now(), value });
       return value;
     },
     async balloon(args) {
-      const out = await worker.call('balloon', args ?? {});
+      const out = await callWz('balloon', args ?? {});
       const fs = await import('node:fs/promises');
       const buf = await fs.readFile(out.png);
       const stamp = createHash('sha1').update(buf).digest('hex').slice(0, 12);
@@ -513,17 +437,17 @@ export function apply(ctx, rawConfig = {}) {
       const key = `cparts:${JSON.stringify(args ?? {}).slice(0, 80)}`;
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 600_000) return hit.value;
-      const value = await worker.call('char_parts', args ?? {});
+      const value = await callWz('char_parts', args ?? {});
       detailCache.set(key, { at: Date.now(), value });
       return value;
     },
     async charPoses() {
-      return worker.call('char_poses', {});
+      return callWz('char_poses', {});
     },
     /** 纸娃娃**逐帧**合成（横向雪碧图），桌宠直接吃这个格式。 */
     async charAnim(args) {
       const spec = args ?? {};
-      const out = await worker.call('char_anim', spec);
+      const out = await callWz('char_anim', spec);
       const fs = await import('node:fs/promises');
       const buf = await fs.readFile(out.png);
       const stamp = createHash('sha1').update(buf).digest('hex').slice(0, 12);
@@ -534,11 +458,29 @@ export function apply(ctx, rawConfig = {}) {
     /** 合成纸娃娃并落盘，返回可直接 <img> 的 URL。 */
     /** 椅子清单（纸娃娃「椅子」槽位用；椅子在 Item/Install，不是 Character 部件）。 */
     async chairList(args) {
-      return worker.call('chair_list', args ?? {});
+      return callWz('chair_list', args ?? {});
     },
     async charRender(args) {
       const spec = args ?? {};
-      const out = await worker.call('char_render', spec);
+      // 带椅子时走桌宠侧的合成：椅子（bodyRelMove / effect 分层 / 跨帧并集画布）
+      // 只在那边实现了一份，不在这里复制第二套，避免两边对不齐。
+      const chairId = spec.chairId ?? spec.chair;
+      const out = chairId
+        ? await callPet('chara', {
+            equips: spec.equips,
+            actions: [spec.pose || 'sit'],
+            flip: !!spec.flip,
+            earType: spec.earType,
+            chairId: String(chairId),
+            mode: 'chara',
+          })
+        : await callWz('char_render', spec);
+      // 桌宠侧的返回是「每个动作一张图」的结构，这里拍平成与 char_render 一致的形状
+      if (chairId) {
+        const keys = Object.keys(out.anims || {});
+        const anim = out.anims?.[keys[0]] || {};
+        return { ...out, w: anim.cell?.w, h: anim.cell?.h, url: anim.url, frames: anim.count, chair: String(chairId) };
+      }
       const stamp = createHash('sha1')
         .update(JSON.stringify({ e: spec.equips, p: spec.pose, f: spec.flip, fr: spec.frame, c: spec.chairId }))
         .digest('hex').slice(0, 10);
@@ -553,7 +495,7 @@ export function apply(ctx, rawConfig = {}) {
       const key = `ears:${(spec.equips || []).join(',')}`;
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 600_000) return hit.value;
-      const value = await worker.call('char_ears', spec);
+      const value = await callWz('char_ears', spec);
       detailCache.set(key, { at: Date.now(), value });
       return value;
     },
@@ -563,7 +505,7 @@ export function apply(ctx, rawConfig = {}) {
       const key = `mlist:${spec.query ?? ''}:${spec.limit ?? ''}`;
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 300_000) return hit.value;
-      const value = await worker.call('map_list', spec);
+      const value = await callWz('map_list', spec);
       detailCache.set(key, { at: Date.now(), value });
       if (detailCache.size > 200) detailCache.delete(detailCache.keys().next().value);
       return value;
@@ -573,24 +515,24 @@ export function apply(ctx, rawConfig = {}) {
       const key = 'mfeatured';
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 600_000) return hit.value;
-      const value = await worker.call('map_featured', {});
+      const value = await callWz('map_featured', {});
       detailCache.set(key, { at: Date.now(), value });
       return value;
     },
     /** 随机一张能当背景的地图（排除 exclude 里的编号，避免连着抽到同一张）。 */
     async mapRandom(args) {
-      return worker.call('map_random', args ?? {});
+      return callWz('map_random', args ?? {});
     },
     /** 下一张背景地图：优先城镇（「走到头就换一张，优先 town」）。 */
     async mapNext(args) {
-      return worker.call('map_next', args ?? {});
+      return callWz('map_next', args ?? {});
     },
     async mapDetail(args) {
       const spec = args ?? {};
       const key = `map:${spec.id}:${JSON.stringify(spec.view ?? {})}`;
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 300_000) return hit.value;
-      const value = await worker.call('map_detail', spec);
+      const value = await callWz('map_detail', spec);
       detailCache.set(key, { at: Date.now(), value });
       if (detailCache.size > 200) detailCache.delete(detailCache.keys().next().value);
       return value;
@@ -605,7 +547,7 @@ export function apply(ctx, rawConfig = {}) {
       const key = `mcanvas:${spec.id}:${spec.scale ?? 1}`;
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 600_000) return hit.value;
-      const out = await worker.call('map_canvas', spec);
+      const out = await callWz('map_canvas', spec);
       const fs = await import('node:fs/promises');
       const buf = await fs.readFile(out.png);
       const stamp = createHash('sha1').update(buf).digest('hex').slice(0, 12);
@@ -621,7 +563,7 @@ export function apply(ctx, rawConfig = {}) {
       const key = `cbox:${spec.id}`;
       const hit = detailCache.get(key);
       if (hit && Date.now() - hit.at < 600_000) return hit.value;
-      const value = await worker.call('map_content_bounds', spec);
+      const value = await callWz('map_content_bounds', spec);
       detailCache.set(key, { at: Date.now(), value });
       return value;
     },
@@ -649,7 +591,7 @@ export function apply(ctx, rawConfig = {}) {
         spec.right = spec.contentBounds.right;
         spec.bottom = spec.contentBounds.bottom;
       }
-      const out = await worker.call('map_viewport_b64', spec);
+      const out = await callWz('map_viewport_b64', spec);
       const buf = Buffer.from(out.png_base64, 'base64');
       // 文件名必须用**内容哈希**：`/file` 路由带 `immutable` 缓存，
       // 同名文件内容一变，浏览器和用户都还会拿旧图（实测截图与上一张字节完全相同）。
@@ -671,7 +613,7 @@ export function apply(ctx, rawConfig = {}) {
       };
     },
     async mapMinimap(args) {
-      const out = await worker.call('map_minimap', args ?? {});
+      const out = await callWz('map_minimap', args ?? {});
       const stamp = createHash('sha1').update(String(args?.id)).digest('hex').slice(0, 8);
       const name = `minimap_${args?.id}_${stamp}.png`;
       const fs = await import('node:fs/promises');
@@ -731,7 +673,7 @@ export function apply(ctx, rawConfig = {}) {
     },
     async frameSheet(args) {
       const spec = args ?? {};
-      const out = await worker.call('sprite', spec);
+      const out = await callWz('sprite', spec);
       const parts = String(spec.path ?? '').split('/');
       const stamp = createHash('sha1')
         .update(JSON.stringify({ ...spec, t: out.frames?.length, s: out.sheet }))
@@ -905,7 +847,7 @@ export function apply(ctx, rawConfig = {}) {
           };
           if (!spec.path) return jsonBody(res, 400, { error: '缺少 path 参数' });
           try {
-            const out = await worker.call('image', spec);
+            const out = await callWz('image', spec);
             const bytes = Buffer.from(out.png_base64, 'base64');
             res.writeHead(200, {
               'content-type': 'image/png',
@@ -932,9 +874,9 @@ export function apply(ctx, rawConfig = {}) {
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute() {
-      const info = await worker.call('packs');
+      const info = await callWz('packs');
       const lines = info.packs.map((p) => `${p.pack}: ${p.volumes.length} 项`);
-      return textResult(`数据源 ${info.data_dir}（region=${info.region} v${info.version}，wzpy=${info.wzpy}）\n${lines.join('\n')}`, info);
+      return textResult(`数据源 ${info.data_dir}（region=${info.region} v${info.version}，engine=wzlib）\n${lines.join('\n')}`, info);
     },
   });
 
@@ -955,7 +897,7 @@ export function apply(ctx, rawConfig = {}) {
     },
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
-      const out = await worker.call('tree', args);
+      const out = await callWz('tree', args);
       const names = out.children.slice(0, 60).map((c) => (c.kind === 'dir' ? `${c.name}/` : c.name));
       return textResult(
         `${out.pack}/${out.path} 是${out.kind === 'dir' ? '目录' : '图片'}，共 ${out.total} 个子项（列出 ${Math.min(60, names.length)} 个）：${names.join('  ')}`,
@@ -981,7 +923,7 @@ export function apply(ctx, rawConfig = {}) {
     },
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
-      const out = await worker.call('search', args);
+      const out = await callWz('search', args);
       const rows = out.hits.map((h) => `${h.kind} ${h.id} ${h.name}${h.matched === 'id' ? '（编号精确命中）' : ''}`);
       return textResult(`"${out.query}" 命中 ${out.count} 条（${out.elapsed}s）：\n${rows.join('\n') || '无'}`, out);
     },
@@ -1008,7 +950,7 @@ export function apply(ctx, rawConfig = {}) {
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
       const spec = { gif: true, ...args };
-      const out = await worker.call('sprite', spec);
+      const out = await callWz('sprite', spec);
       const saved = [out.saved_png, out.saved_gif].filter(Boolean).map((p) => `，已复制到 ${p}`).join('');
       return textResult(
         `${out.path} 的「${out.animation}」共 ${out.frames.length} 帧（${out.scale}×）→ 雪碧图 ${out.png}` +
@@ -1036,14 +978,14 @@ export function apply(ctx, rawConfig = {}) {
     async execute(args) {
       const id = String(args.id).trim();
       const kind = args.kind || (/^\d{7}$/.test(id) || /^\d{6,7}$/.test(id) ? 'mob' : 'eqp');
-      const found = await worker.call('search', { query: id, kind, limit: 5 });
+      const found = await callWz('search', { query: id, kind, limit: 5 });
       const exact = found.hits.find((h) => h.matched === 'id') ?? found.hits[0];
       if (!exact) return textResult(`WZ 里没有编号 ${id}（类别 ${kind}）`, { id, kind, found: null });
       let body = null;
       if (exact.kind === 'eqp' && exact.group) {
         const padded = id.padStart(8, '0');
         try {
-          body = await worker.call('get', { path: `Character/${exact.group}/${padded}.img` });
+          body = await callWz('get', { path: `Character/${exact.group}/${padded}.img` });
         } catch {
           body = null;
         }
@@ -1053,7 +995,7 @@ export function apply(ctx, rawConfig = {}) {
         for (const cand of candidates) {
           for (const p of [`${pack}/${cand}.img`, `${pack}/_Canvas/${cand}.img`]) {
             try {
-              body = await worker.call('get', { path: p });
+              body = await callWz('get', { path: p });
               break;
             } catch {
               /* 换个候选 */
@@ -1071,7 +1013,7 @@ export function apply(ctx, rawConfig = {}) {
       let ms = null;
       if (exact.kind === 'mob') {
         try {
-          const d = await worker.call('ms_mob', { id });
+          const d = await callWz('ms_mob', { id });
           if (d?.found) {
             ms = {
               file: d.file,
@@ -1116,7 +1058,7 @@ export function apply(ctx, rawConfig = {}) {
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
       if (args.id) {
-        const d = await worker.call('map_detail', {
+        const d = await callWz('map_detail', {
           id: String(args.id),
           view: { w: args.view_w ?? 1920, h: args.view_h ?? 1080, zoom: 1 },
         });
@@ -1130,7 +1072,7 @@ export function apply(ctx, rawConfig = {}) {
           d,
         );
       }
-      const out = await worker.call('map_list', { query: args.query ?? '', limit: args.limit ?? 60 });
+      const out = await callWz('map_list', { query: args.query ?? '', limit: args.limit ?? 60 });
       const rows = out.maps.map((m) => `${m.id}  ${m.name}${m.street ? `  （${m.street}）` : ''}`);
       return textResult(`地图名录「${out.query || '全部'}」共 ${out.total} 条：\n${rows.join('\n')}`, out);
     },
@@ -1158,10 +1100,10 @@ export function apply(ctx, rawConfig = {}) {
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
       if (args.minimap) {
-        const out = await worker.call('map_minimap', { id: String(args.id) });
+        const out = await callWz('map_minimap', { id: String(args.id) });
         return textResult(`地图 ${args.id} 小地图 → ${out.png}（${(out.bytes / 1024).toFixed(0)} KB）`, out);
       }
-      const out = await worker.call('map_image', { ...args, id: String(args.id) });
+      const out = await callWz('map_image', { ...args, id: String(args.id) });
       const scope = out.viewport ? `视口 ${out.w}×${out.h}` : `整图 ${out.w}×${out.h}`;
       return textResult(`地图 ${args.id} ${scope} → ${out.png}`, out);
     },
@@ -1191,11 +1133,11 @@ export function apply(ctx, rawConfig = {}) {
     async execute(args) {
       const action = String(args.action || 'parts');
       if (action === 'poses') {
-        const d = await worker.call('char_poses', {});
+        const d = await callWz('char_poses', {});
         return textResult(`可用姿势：${d.poses.join(', ')}`, d);
       }
       if (action === 'anim') {
-        const out = await worker.call('char_anim', {
+        const out = await callWz('char_anim', {
           equips: args.equips ?? [], pose: args.pose ?? 'stand1',
           flip: args.flip ?? false, frames: undefined,
         });
@@ -1205,7 +1147,7 @@ export function apply(ctx, rawConfig = {}) {
         );
       }
       if (action === 'render') {
-        const out = await worker.call('char_render', {
+        const out = await callWz('char_render', {
           equips: args.equips ?? [], pose: args.pose ?? 'stand1',
           flip: args.flip ?? false, frame: args.frame ?? 0,
         });
@@ -1214,7 +1156,7 @@ export function apply(ctx, rawConfig = {}) {
           out,
         );
       }
-      const d = await worker.call('char_parts', { categories: args.categories, limit: args.limit ?? 40 });
+      const d = await callWz('char_parts', { categories: args.categories, limit: args.limit ?? 40 });
       const lines = Object.entries(d.categories).map(([cat, v]) =>
         `${cat}（共 ${v.total}）：${v.items.map((i) => i.id).slice(0, 8).join(' ')}…`);
       return textResult(
@@ -1244,13 +1186,13 @@ export function apply(ctx, rawConfig = {}) {
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
       if (String(args.action || 'make') === 'styles') {
-        const d = await worker.call('balloon_styles', {});
+        const d = await callWz('balloon_styles', {});
         return textResult(
           `聊天气泡样式：共 ${d.total} 个，可用 ${d.usable} 个。可用样例：${d.styles.slice(0, 12).map((s) => s.id).join(', ')}`,
           d,
         );
       }
-      const out = await worker.call('balloon', {
+      const out = await callWz('balloon', {
         text: args.text ?? '你好，冒险岛！', style: args.style, fontSize: args.fontSize ?? 13,
       });
       return textResult(
@@ -1278,7 +1220,7 @@ export function apply(ctx, rawConfig = {}) {
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     async execute(args) {
       if (args.id) {
-        const d = await worker.call('ms_mob', { file: args.file ?? 'Mob_00000.ms', id: String(args.id) });
+        const d = await callWz('ms_mob', { file: args.file ?? 'Mob_00000.ms', id: String(args.id) });
         if (!d.found) {
           return textResult(
             `${args.id} 在 ${d.file} 里没有结构（该容器共 ${d.total_mobs} 个 mob）` +
@@ -1293,7 +1235,7 @@ export function apply(ctx, rawConfig = {}) {
           d,
         );
       }
-      const out = await worker.call('packs_ms', {});
+      const out = await callWz('packs_ms', {});
       const rows = out.packs.map((p) => `${p.file}  ${p.mb}MB${p.opened ? '（已打开）' : ''}`);
       return textResult(`${out.dir} 下的 .ms 容器：\n${rows.join('\n')}\n${out.note}`, out);
     },
@@ -1319,13 +1261,13 @@ export function apply(ctx, rawConfig = {}) {
     async execute(args) {
       const id = String(args.id).trim();
       const kind = args.kind || (id.length >= 8 ? 'eqp' : 'mob');
-      const out = await worker.call('sources', { kind, id });
+      const out = await callWz('sources', { kind, id });
       const lines = out.sources.map((s) =>
         `[${s.exists ? (s.has_info ? '有 info' : '仅图像') : '不存在'}] ${s.label}  ${s.path}\n      ${s.note}`);
       let ms = null;
       if (kind === 'mob') {
         try {
-          ms = await worker.call('ms_mob', { id });
+          ms = await callWz('ms_mob', { id });
         } catch {
           ms = null;
         }
@@ -1347,10 +1289,7 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   // 预热 worker（失败只记录，不影响其它功能）
-  worker.start().catch((error) => logger.warn?.(`WZ worker 预热失败：${error?.message ?? error}`));
-  if (libWorker) {
-    libWorker.start().catch((error) => logger.warn?.(`WzLib worker 预热失败：${error?.message ?? error}`));
-  }
+  libWorker.start().catch((error) => logger.warn?.(`WZ worker 预热失败：${error?.message ?? error}`));
 
   // ══════════════════════════════════════════════════════════════════════
   //  桌面宠物（原 @local/dsh-desktop-pet，已合并进来）
@@ -1367,18 +1306,16 @@ export function apply(ctx, rawConfig = {}) {
     dataDir: config.dataDir,
     region: config.region,
     version: config.version,
-    python: config.python,
-    wzpyPath: config.wzpyPath,
     mobId: String(rawConfig.mobId ?? '1210102'),
     // 'mob' = 怪物桌宠；'chara' = 纸娃娃桌宠（可换部位）
     mode: rawConfig.mode === 'chara' ? 'chara' : 'mob',
     originFallback: rawConfig.originFallback === 'topleft' ? 'topleft' : 'center',
   };
-  const petWorker = new WzWorker(petConfig, logger, {
-    script: PET_WORKER,
-    envPrefix: 'PET',
-    id: 'desktop-pet',
-  });
+  // 桌宠与主 worker 共用同一个 .NET 进程实现，但命令名要避开 stats/search 这类重名，
+  // 所以这里统一加 pet_ 前缀（Dispatch 侧对应 TryDispatchPet 的键）。
+  const petWorker = new WzWorker(petConfig, logger, { envPrefix: 'PET', id: 'desktop-pet' });
+  const PET_CMD = { info: 'pet_info', search: 'pet_search', presets: 'pet_presets', stats: 'pet_stats' };
+  const callPet = (cmd, args) => petWorker.call(PET_CMD[cmd] ?? cmd, args);
   ctx.effect(() => () => petWorker.dispose(), 'desktop-pet: worker');
 
   // 客户端表现默认值（CSS px / ms，可被 /api 的单次请求覆盖）
@@ -1505,9 +1442,9 @@ export function apply(ctx, rawConfig = {}) {
       // 挂了椅子 → worker 自动改坐姿 + 叠椅子层；坐姿只有 1 帧，桌宠天然静止。
       const chairId = String(args.chairId ?? loadDoll()?.chair ?? '').trim();
       const data = mode === 'chara'
-        ? await petWorker.call('chara', { equips, actions: want, flip: !!args.flip, earType,
+        ? await callPet('chara', { equips, actions: want, flip: !!args.flip, earType,
                                          chairId })
-        : await petWorker.call('pet', { id, actions: want, originFallback });
+        : await callPet('pet', { id, actions: want, originFallback });
       const anims = {};
       for (const [key, value] of Object.entries(data.anims ?? {})) {
         const { file, ...rest } = value;
@@ -1553,11 +1490,13 @@ export function apply(ctx, rawConfig = {}) {
       };
     },
     async info(args = {}) {
-      return petWorker.call('info', { id: String(args.id ?? currentMobId) });
+      return callPet('info', { id: String(args.id ?? currentMobId) });
     },
     /** 换宠候选：按中文名/编号搜怪物。 */
-    async search(args = {}) {
-      const out = await petWorker.call('search', {
+    // 名字必须是 petSearch：api 里的 search 是资源面板的按类搜索，
+    // 两者同名会被 Object.assign 覆盖，面板的 kind 过滤会失效。
+    async petSearch(args = {}) {
+      const out = await callPet('search', {
         query: String(args.query ?? ''),
         limit: numOr(args.limit, 40),
       });
@@ -1630,7 +1569,7 @@ export function apply(ctx, rawConfig = {}) {
       return { mobId: id, name: data.name ?? null, pet: data };
     },
     async petStats() {
-      return petWorker.call('stats');
+      return callPet('stats');
     },
   };
 

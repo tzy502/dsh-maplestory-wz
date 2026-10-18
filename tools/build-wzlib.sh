@@ -26,10 +26,27 @@ echo "==> 用 $DOTNET 编译 net/WzWorker"
 "$DOTNET" build net/WzWorker/WzWorker.csproj -c Release --nologo -v q
 
 OUT="net/WzWorker/bin/Release/net9.0/wzworker.dll"
-if [ -f "$OUT" ]; then
-  echo "✓ 产物：$OUT"
-  echo "  插件会按 engine=auto 自动使用它（找不到 .NET 时回退 Python 半边）。"
-else
+if [ ! -f "$OUT" ]; then
   echo "✗ 编译结束但没有产物：$OUT" >&2
   exit 1
 fi
+
+# 同时放一份到 dist/：这份会进仓库与 npm 包，用户只要有 .NET 运行时就能跑，
+# 不必再装 SDK。IL 是跨平台的，一次编译各平台通用。
+DIST="net/WzWorker/dist"
+mkdir -p "$DIST"
+cp net/WzWorker/bin/Release/net9.0/wzworker.dll "$DIST/"
+cp net/WzWorker/bin/Release/net9.0/wzworker.deps.json "$DIST/" 2>/dev/null || true
+cp net/WzWorker/bin/Release/net9.0/wzworker.runtimeconfig.json "$DIST/" 2>/dev/null || true
+cp net/WzWorker/bin/Release/net9.0/WzComparerR2.WzLib.dll "$DIST/" 2>/dev/null || true
+# SkiaSharp 的托管库与各平台原生库必须一起带走，否则文字渲染会在运行时找不到程序集
+for f in net/WzWorker/bin/Release/net9.0/SkiaSharp*.dll; do
+  [ -f "$f" ] && cp "$f" "$DIST/" || true
+done
+for d in net/WzWorker/bin/Release/net9.0/runtimes; do
+  [ -d "$d" ] && cp -R "$d" "$DIST/" || true
+done
+
+echo "✓ 产物：$OUT"
+echo "✓ 分发包：$DIST/（随 npm 包发布，用户只需 .NET 运行时）"
+ls -la "$DIST" | tail -5

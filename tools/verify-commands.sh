@@ -24,28 +24,29 @@ CASES=(
   'tree:Mob|{"cmd":"tree","args":{"pack":"Mob","limit":5}}'
   'search|{"cmd":"search","args":{"query":"花蘑菇","limit":3}}'
   'get|{"cmd":"get","args":{"path":"Mob/1210102.img"}}'
-  'frames|{"cmd":"frames","args":{"path":"Mob/1210102.img","animation":"stand"}}'
+  'frameSheet|{"cmd":"frameSheet","args":{"path":"Mob/1210102.img","animation":"stand"}}'
   'sprite|{"cmd":"sprite","args":{"path":"Mob/1210102.img","animation":"move","scale":1}}'
   'sprite:gif|{"cmd":"sprite","args":{"path":"Mob/1210102.img","animation":"move","scale":1,"gif":true}}'
-  'image|{"cmd":"image","args":{"path":"Mob/1210102.img","animation":"stand"}}'
-  'msPacks|{"cmd":"msPacks","args":{}}'
-  'detail:mob|{"cmd":"detail","args":{"id":"1210102","kind":"mob"}}'
-  'detail:eqp|{"cmd":"detail","args":{"id":"1302000","kind":"eqp"}}'
+  'detail|{"cmd":"detail","args":{"id":"1210102","kind":"mob"}}'
   'sources|{"cmd":"sources","args":{"id":"1210102","kind":"mob"}}'
   'stats|{"cmd":"stats","args":{}}'
-  'char_poses|{"cmd":"char_poses","args":{}}'
-  'char_parts|{"cmd":"char_parts","args":{}}'
-  'char_render|{"cmd":"char_render","args":{"equips":{"Body":"00002000","Head":"00012000","Hair":"00042590","Face":"00022038","Longcoat":"01054561","Shoes":"01074237","Weapon":"01703725"},"pose":"stand1","flip":false}}'
-  'chair_list|{"cmd":"chair_list","args":{}}'
-  'balloon_styles|{"cmd":"balloon_styles","args":{}}'
+  'msPacks|{"cmd":"msPacks","args":{}}'
+  'msMob|{"cmd":"msMob","args":{"id":"1210102"}}'
+  'charParams|{"cmd":"charParts","args":{}}'
+  'charPoses|{"cmd":"charPoses","args":{}}'
+  'chairList|{"cmd":"chairList","args":{"limit":5}}'
+  'charRender|{"cmd":"charRender","args":{"equips":{"Body":"00002000","Head":"00012000","Hair":"00042590","Face":"00022038","Longcoat":"01054561","Shoes":"01074237","Weapon":"01703725"},"pose":"stand1","flip":false}}'
+  'balloonStyles|{"cmd":"balloonStyles","args":{}}'
   'balloon|{"cmd":"balloon","args":{"text":"你好，冒险岛！","style":0}}'
-  'map_list|{"cmd":"map_list","args":{"limit":5}}'
-  'map_featured|{"cmd":"map_featured","args":{}}'
-  'map_detail|{"cmd":"map_detail","args":{"id":"100000000"}}'
-  'map_content_bounds|{"cmd":"map_content_bounds","args":{"id":"100000000"}}'
-  'cmsdl_status|{"cmd":"cmsdl_status","args":{}}'
-  'cmsdl_probe|{"cmd":"cmsdl_probe","args":{}}'
-  'cmsdl_plan|{"cmd":"cmsdl_plan","args":{}}'
+  'mapList|{"cmd":"mapList","args":{"limit":5}}'
+  'mapFeatured|{"cmd":"mapFeatured","args":{}}'
+  'mapNext|{"cmd":"mapNext","args":{}}'
+  'mapRandom|{"cmd":"mapRandom","args":{}}'
+  'mapCanvas|{"cmd":"mapCanvas","args":{"id":"100000000","scale":0.25}}'
+  'mapMinimap|{"cmd":"mapMinimap","args":{"id":"100000000"}}'
+  'updateStatus|{"cmd":"updateStatus","args":{}}'
+  'updateProbe|{"cmd":"updateProbe","args":{}}'
+  'updatePlan|{"cmd":"updatePlan","args":{}}'
   'petGet|{"cmd":"petGet","args":{}}'
   'petSearch|{"cmd":"petSearch","args":{"query":"蘑菇","limit":3}}'
   'pet|{"cmd":"pet","args":{"id":"1210102","actions":["stand","move"],"mode":"mob"}}'
@@ -57,20 +58,19 @@ for item in "${CASES[@]}"; do
   body="${item#*|}"
   code=$(curl -s -m 180 -o "$TMP/out.json" -w '%{http_code}' \
     -X POST "$API" -H 'content-type: application/json' --data-binary "$body" 2>/dev/null)
-  ok=$(python3 -c "
-import json,sys
-try:
-    d=json.load(open('$TMP/out.json'))
-    print('1' if d.get('ok') else '0')
-    if not d.get('ok'): print(str(d.get('error'))[:90], file=sys.stderr)
-except Exception as e:
-    print('0'); print(f'解析失败 {e}', file=sys.stderr)
+  ok=$(node -e "
+const fs=require('fs');
+try{
+  const d=JSON.parse(fs.readFileSync('$TMP/out.json','utf8'));
+  console.log(d.ok?'1':'0');
+  if(!d.ok) console.error(JSON.stringify(d.error).slice(0,90));
+}catch(e){ console.log('0'); console.error('解析失败 '+e.message); }
 " 2>"$TMP/err")
   if [ "$code" = "200" ] && [ "$ok" = "1" ]; then
-    engine=$(python3 -c "
-import json
-d=json.load(open('$TMP/out.json')).get('data') or {}
-print(d.get('engine') or '')
+    engine=$(node -e "
+const fs=require('fs');
+const d=(JSON.parse(fs.readFileSync('$TMP/out.json','utf8')).data)||{};
+console.log(d.engine||'');
 " 2>/dev/null)
     printf '  ✓ %-18s %s\n' "$name" "${engine:+engine=$engine}"
     pass=$((pass+1))
