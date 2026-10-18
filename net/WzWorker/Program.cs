@@ -65,6 +65,8 @@ internal static class Program
         "get" => CmdGet(args),
         "msPacks" => CmdMsPacks(),
         "image" => CmdImage(args),
+        "frames" => CmdFrames(args),
+        "sprite" => CmdSprite(args),
         "ping" => new JsonObject { ["engine"] = "wzlib", ["data_dir"] = _dataDir },
         _ => throw new NotSupportedException($"wzlib worker 暂不支持命令：{cmd}"),
     };
@@ -394,6 +396,135 @@ internal static class Program
             ["frame"] = target.Text,
             ["engine"] = "wzlib",
         };
+    }
+
+    /// <summary>把一张 img 的某个动作展开成帧列表（每帧带画布、锚点、延迟）。</summary>
+    private static (string Anim, List<Frame> Items) CollectFrames(JsonObject args, string path, out List<JsonObject> Meta)
+    {
+        var trimmed = path.Trim('/');
+        var segs = trimmed.Replace('\\', '/').Split('/', 2);
+        var pack = segs[0];
+        var rest = segs.Length > 1 ? segs[1] : "";
+        var root = FindTop(pack) ?? throw new FileNotFoundException($"没有这个分类：{pack}");
+        var node = rest.Length == 0 ? root : root.FindNodeByPath(rest.Replace('/', '\\'), true)
+            ?? throw new FileNotFoundException($"{path} 不存在");
+        var body = ExpandImage(node, path);
+
+        var want = args["animation"]?.GetValue<string>() ?? "stand";
+        var anchor = "";
+        var hash = want.IndexOf('#');
+        if (hash >= 0) { anchor = want[(hash + 1)..]; want = want[..hash]; }
+
+        var animNode = body.FindNodeByPath(want, true);
+        var animName = want;
+        if (animNode is null)
+        {
+            // 没指定动作就取第一个有子节点的
+            var first = body.Nodes.FirstOrDefault(n => n.Nodes.Count > 0 || n.Value is Wz_Png || n.GetValue<Wz_Png>() is not null);
+            if (first is null) throw new FileNotFoundException($"{path} 里没有动作");
+            animNode = first;
+            animName = first.Text;
+        }
+
+        var frames = new List<Frame>();
+        Meta = new List<JsonObject>();
+        var candidates = animNode.Nodes.Count > 0 ? animNode.Nodes.ToList() : new List<Wz_Node> { animNode };
+        foreach (var fr in candidates)
+        {
+            if (anchor.Length > 0 && fr.Text != anchor && fr.Text.TrimStart('0') != anchor.TrimStart('0')) continue;
+            var resolved = ResolveCanvas(fr);
+            var png = resolved.GetValue<Wz_Png>() ?? resolved.Value as Wz_Png;
+            if (png is null) continue;
+            if (png.Width <= 1 && png.Height <= 1) continue; // 占位画布
+            var bmp = Png.Decode(png);
+            var origin = fr.FindNodeByPath("origin")?.GetValueEx<Wz_Vector>(null)
+                      ?? resolved.FindNodeByPath("origin")?.GetValueEx<Wz_Vector>(null);
+            var delay = fr.FindNodeByPath("delay")?.GetValueEx<int>(0) ?? 0;
+            var ox = origin?.X ?? bmp.W / 2;
+            var oy = origin?.Y ?? bmp.H / 2;
+            frames.Add(new Frame(fr.Text, bmp, ox, oy, delay));
+            Meta.Add(new JsonObject
+            {
+                ["name"] = fr.Text,
+                ["w"] = bmp.W,
+                ["h"] = bmp.H,
+                ["origin"] = new JsonArray(ox, oy),
+                ["delay"] = delay,
+            });
+        }
+        if (frames.Count == 0) throw new FileNotFoundException($"{path} 的 {animName} 没有帧");
+        return (animName, frames);
+    }
+
+    private static JsonNode CmdFrames(JsonObject args)
+    {
+        var path = args["path"]?.GetValue<string>() ?? throw new InvalidOperationException("frames 需要 path");
+        var (anim, items) = CollectFrames(args, path, out var meta);
+        var arr = new JsonArray();
+        foreach (var m in meta) arr.Add(m);
+        return new JsonObject
+        {
+            ["path"] = path,
+            ["animation"] = anim,
+            ["count"] = items.Count,
+            ["frames"] = arr,
+            ["engine"] = "wzlib",
+        };
+    }
+
+    private static JsonNode CmdSprite(JsonObject args)
+    {
+        var path = args["path"]?.GetValue<string>() ?? throw new InvalidOperationException("sprite 需要 path");
+        var scale = args["scale"]?.GetValue<int>() ?? 1;
+        var outDir = Environment.GetEnvironmentVariable("WZ_OUT_DIR") ?? Path.GetTempPath();
+        var (anim, items) = CollectFrames(args, path, out _);
+
+        var (sheet, rects, cellW, cellH) = Sheet.Compose(items, scale);
+        Directory.CreateDirectory(outDir);
+        var stem = $"{path.Replace('/', '_').Replace(".img", "")}_{anim}_{scale}_{items.Count}";
+        var png = Path.Combine(outDir, $"sprite_{stem}.png");
+        File.WriteAllBytes(png, Png.Encode(sheet));
+
+        // 字段名必须与宿主 api.sprite 读的一致（sheet/frame/padding/scale/frames[*].origin）
+        var framesArr = new JsonArray();
+        foreach (var r in rects)
+        {
+            framesArr.Add(new JsonObject
+            {
+                ["index"] = r.Index,
+                ["x"] = r.X, ["y"] = r.Y, ["w"] = r.W, ["h"] = r.H,
+                ["origin"] = new JsonArray(r.Ox / scale, r.Oy / scale),
+                ["delay"] = r.Delay > 0 ? r.Delay : 100,
+            });
+        }
+        // Python 的 frame.w/h 是**并集画布**尺寸（不是最大单帧），对齐它
+        var maxW = cellW;
+        var maxH = cellH;
+        var outObj = new JsonObject
+        {
+            ["path"] = path,
+            ["animation"] = anim,
+            ["count"] = items.Count,
+            ["sheet"] = new JsonObject { ["w"] = sheet.W, ["h"] = sheet.H },
+            ["frame"] = new JsonObject { ["w"] = maxW, ["h"] = maxH },
+            ["padding"] = 2,
+            ["scale"] = scale,
+            ["frames"] = framesArr,
+            ["png"] = png,
+            ["engine"] = "wzlib",
+        };
+
+        if (args["gif"]?.GetValue<bool>() == true)
+        {
+            var gif = Path.Combine(outDir, $"anim_{stem}.gif");
+            var (gw, gh, gf) = Sheet.WriteGif(items, gif, scale,
+                args["max_side"]?.GetValue<int>() ?? 480);
+            outObj["gif"] = gif;
+            outObj["gif_w"] = gw;
+            outObj["gif_h"] = gh;
+            outObj["gif_frames"] = gf;
+        }
+        return outObj;
     }
 
     /// <summary>Packs 目录下的 .ms / .mn 清单。</summary>

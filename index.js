@@ -330,7 +330,7 @@ export function apply(ctx, rawConfig = {}) {
   // 渲染类（sprite / char / map / balloon / chair）仍在 Python 半边 —— 那些还没迁。
   // 路由放在这一层而不是各 setter 里，是为了让调用方完全无感。
   const wanted = String(config.engine || 'auto').toLowerCase();
-  const wziLibCommands = new Set(['packs', 'tree', 'search', 'get', 'packs_ms', 'msPacks', 'ping']);
+  const wziLibCommands = new Set(['packs', 'tree', 'search', 'get', 'packs_ms', 'msPacks', 'ping', 'frames', 'sprite', 'image']);
 
   // engine:
   //   'auto'（缺省）—— 机器上有 .NET 且 worker 已编译就用 WzLib，否则回退 Python
@@ -430,14 +430,14 @@ export function apply(ctx, rawConfig = {}) {
     async get(args) {
       const info = await callWz('get', args ?? {});
       if ((!info.animations || info.animations.length === 0) && args?.path) {
-        const preview = await worker.call('sprite', { path: args.path, animation: '', scale: 1 });
+        const preview = await callWz('sprite', { path: args.path, animation: '', scale: 1 });
         info.preview = preview;
       }
       return info;
     },
     async sprite(args) {
       const spec = args ?? {};
-      const out = await worker.call('sprite', spec);
+      const out = await callWz('sprite', spec);
       const parts = String(spec.path ?? '').split('/');
       const stamp = createHash('sha1')
         .update(JSON.stringify({ ...spec, t: out.sheet }))
