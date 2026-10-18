@@ -180,6 +180,29 @@ open data roots and parsed images.
 
 ### Reading WZ
 
+Reads go through **WzComparerR2's WzLib** (the community standard, MIT). The plugin has two
+halves speaking one protocol (one JSON per stdin line); `engine` picks which:
+
+| `engine` | Behaviour |
+|---|---|
+| `auto` (default) | Uses WzLib when .NET 9 and a built worker are present, otherwise the Python half |
+| `wzlib` | Forces the .NET half; fails loudly without .NET, which makes debugging easier |
+| `wzpy` | Forces the Python half (wzpy, vendored) |
+
+Build the .NET half once:
+
+```bash
+bash tools/build-wzlib.sh
+```
+
+It owns the pure reading commands (categories, tree, search, encyclopedia info, `.ms`
+listing); rendering (sprites, paper dolls, chairs, maps, balloons) still lives in the
+Python half.
+
+**`.ms` containers** are read by WzLib's native `LoadMsFile()`: the worker loads
+`Data/Packs/*.ms` and `*.mn` at startup, so actions, `origin` and `delay` come from there.
+
+
 A source is either the property-bearing image or a pure pixel store, and the two are easy
 to confuse:
 

@@ -164,6 +164,28 @@ Agent 工具 ──────────────────────�
 
 ### 读 WZ
 
+读取统一走 **WzComparerR2 的 WzLib**（社区事实标准，MIT）。插件里有两套半边，
+协议完全一致（stdin 一行一个 JSON），由 `engine` 决定用哪套：
+
+| `engine` | 行为 |
+|---|---|
+| `auto`（缺省）| 机器上有 .NET 9 且 worker 已编译就用 WzLib，否则回退 Python 半边 |
+| `wzlib` | 强制 .NET 半边；缺 .NET 报错，便于排查 |
+| `wzpy` | 强制 Python 半边（wzpy，随包内置） |
+
+.NET 半边在 `net/WzWorker/`，编译一次即可：
+
+```bash
+bash tools/build-wzlib.sh          # 或 DOTNET=/path/to/dotnet bash tools/build-wzlib.sh
+```
+
+它已经接管**纯读取类**命令（分类/目录树/搜索/图鉴信息/`.ms` 清单）；
+渲染类（精灵图、纸娃娃、椅子、地图、气泡）仍在 Python 半边，尚未迁移。
+
+**`.ms` 结构容器**由 WzLib 原生的 `LoadMsFile()` 读取：worker 启动时会把
+`Data/Packs/*.ms`、`*.mn` 一并载入，动作、`origin`、`delay` 都从里面取。
+
+
 一个来源要么承载属性，要么纯粹是像素仓库，两者极易混淆：
 
 | 来源 | 内容 | 角色 |
