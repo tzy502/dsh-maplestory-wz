@@ -27,7 +27,9 @@ import { createCmsdlManager } from './lib/cmsdl.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(HERE, 'py', 'wz_worker.py');
 const ROUTE_PREFIX = '/dsh-maplestory-wz';
-const DEFAULT_DATA_DIR = '/Volumes/SSD/mxd/mxd/Data';
+// 不设本机默认数据目录：硬编码某台机器的路径对别人无意义，
+// 还会把「没配 dataDir」表现成「路径不存在」这种难查的现象。
+const DEFAULT_DATA_DIR = '';
 const OUT_DIR = join(homedir(), '.dsh', 'wz-assets');
 const BG_CONFIG = join(OUT_DIR, 'background.json');
 // 最近一次 plan 用的地区（状态卡推导 WZ 落盘位置时要它）
@@ -52,12 +54,19 @@ function optsOutDir(prefix, wzOutDir) {
   return prefix === 'PET' ? PET_OUT_DIR : wzOutDir;
 }
 
+// 解释器探测：配置/环境变量优先，再按平台找常见位置。
+// Windows 上没有常用的 `python3` 命令（是 `python` / `py`），漏了这几项会让
+// Windows 用户一装上就报「找不到 Python」。
 const PYTHON_CANDIDATES = [
   process.env.WZ_PYTHON,
   join(homedir(), '.hermes', 'cache', 'scratch', 'wz-env', 'bin', 'python'),
-  '/opt/homebrew/bin/python3',
-  '/usr/local/bin/python3',
+  '/opt/homebrew/bin/python3',                                   // macOS Apple Silicon
+  '/usr/local/bin/python3',                                      // macOS Intel / Linux
   '/usr/bin/python3',
+  join(homedir(), '.hermes', 'cache', 'scratch', 'wz-env', 'Scripts', 'python.exe'),
+  'py',                                                          // Windows launcher
+  'python',
+  'python3',
 ];
 
 export const inject = ['tools', 'webServer'];
@@ -285,9 +294,10 @@ export function apply(ctx, rawConfig = {}) {
   function detectClientDirs() {
     const out = [];
     // 数据源是 <client>/mxd/Data，所以客户端根 = 上两级
-    const parent = dirname(dirname(DEFAULT_DATA_DIR));
+    // dataDir 没配置时不能拿空串去 dirname(dirname(...)) —— 会得到 "." 这种无意义候选
+    const parent = DEFAULT_DATA_DIR ? dirname(dirname(DEFAULT_DATA_DIR)) : '';
     const cands = [
-      parent,
+      parent !== '.' ? parent : '',
       join(homedir(), 'Applications', '冒险岛'),
       '/Applications/冒险岛',
       '/Applications/MapleStory',

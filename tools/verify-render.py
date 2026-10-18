@@ -21,6 +21,35 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = os.path.join(os.path.dirname(HERE), "py")
+
+# 数据源：worker 不再内置本机默认路径（那是某个人的机器），所以脚本自己找。
+# 顺序：环境变量 → profile 的 patch → 包内 patch 的占位值（找不到就明确报错）。
+def _resolve_data_dir() -> str:
+    env = os.environ.get("WZ_DATA_DIR")
+    if env:
+        return env
+    import glob
+    for p in (
+        os.path.expanduser("~/.dsh/profiles/*/cordis.patch.yml"),
+        os.path.join(os.path.dirname(HERE), "cordis.patch.yml"),
+    ):
+        for f in glob.glob(p):
+            try:
+                for line in open(f, encoding="utf-8"):
+                    t = line.strip()
+                    if t.startswith("dataDir:"):
+                        v = t.split(":", 1)[1].strip().strip("'\"")
+                        # 跳过包里的占位值
+                        if v and not v.startswith("/path/to"):
+                            return v
+            except OSError:
+                continue
+    return ""
+
+_DATA_DIR = _resolve_data_dir()
+if _DATA_DIR:
+    os.environ.setdefault("WZ_DATA_DIR", _DATA_DIR)
+    os.environ.setdefault("PET_DATA_DIR", _DATA_DIR)
 # 桌宠已并入本插件：worker 就在同一个 py/ 目录下
 PET_PY = PY
 sys.path.insert(0, PY)

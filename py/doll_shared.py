@@ -45,10 +45,12 @@ def _ensure_wzpy_on_path() -> None:
     """
     import os as _os
     import sys as _sys
+    _vendor = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "vendor")
     cands = [
         _os.environ.get("WZPY_PATH"),
+        _vendor,
         _os.path.expanduser("~/.hermes/cache/scratch/wz-python"),
-        "/Users/a502/.hermes/cache/scratch/wz-python",
     ]
     for c in cands:
         if c and _os.path.isdir(_os.path.join(c, "wzpy")) and c not in _sys.path:

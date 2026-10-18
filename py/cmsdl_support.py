@@ -36,7 +36,9 @@ DEFAULT_TARGET_DIR = os.path.join(CMSDL_DIR, "client")
 PROBE_TIMEOUT = 5.0
 
 #: WZ 数据源目录（与 worker 的 DATA_DIR 同一环境变量，避免两处定义漂移）
-DATA_DIR = os.environ.get("WZ_DATA_DIR") or "/Volumes/SSD/mxd/mxd/Data"
+# 不给本机默认值：硬编码某台机器的路径对别人没意义，
+# 还会把「没配置」表现成「路径不存在」这种难懂的报错。
+DATA_DIR = os.environ.get("WZ_DATA_DIR") or ""
 
 
 def _candidates(override: str = "") -> List[Tuple[str, str]]:

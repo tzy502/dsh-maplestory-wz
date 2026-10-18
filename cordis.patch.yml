@@ -8,7 +8,11 @@
       name: 'dsh-maplestory-wz'
       config:
         # ── 数据源（两个 worker 共用）──
-        dataDir: /Volumes/SSD/mxd/mxd/Data
+        # 必须改成你自己的冒险岛客户端 Data 目录（如 D:/MapleStory/Data）。
+        # 推荐在 profile 的 cordis.patch.yml 里按同一个 id 覆盖这一项：
+        # 包自带的是占位值，机器相关的路径放在你自己的 profile 里，
+        # 这样插件升级不会覆盖掉你的配置。
+        dataDir: /path/to/MapleStory/Data
         region: BMS
         version: 228
 

@@ -21,8 +21,12 @@ import traceback
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # ── wzpy 定位（可被 WZPY_PATH 覆盖；逐个候选尝试）─────────────────────
+# 内置副本排第一：插件自带读取器，不依赖任何外部缓存目录
+# （`~/.hermes/cache/scratch/` 会被清理，2026-10-17 就被 prune 过一次，插件当场全废）。
+_VENDOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor")
 WZPY_CANDIDATES = [
     os.environ.get("WZPY_PATH") or "",
+    _VENDOR,
     os.path.expanduser("~/.hermes/cache/scratch/wz-python"),
     os.path.expanduser("~/wz-python"),
     "/opt/wz-python",
@@ -92,7 +96,9 @@ from wzpy.properties import (  # noqa: E402
 from wzpy.wz_package import resolve_canvas_link  # noqa: E402
 from PIL import Image, ImageFilter  # noqa: E402
 
-DATA_DIR = os.environ.get("WZ_DATA_DIR") or "/Volumes/SSD/mxd/mxd/Data"
+# 不给本机默认值：硬编码某台机器的路径对别人没意义，
+# 还会把「没配置」表现成「路径不存在」这种难懂的报错。
+DATA_DIR = os.environ.get("WZ_DATA_DIR") or ""
 # 区域名直接用 wzpy 的键名（GMS / EMS / BMS）。
 # 没有 CMS 这个键：国服客户端是零 IV，在 wzpy 里就叫 BMS —— 用错了会在
 # 解码时抛 KeyError 或解析出空字符串表，所以这里不做名字映射。
@@ -1288,6 +1294,9 @@ _balloon_cache: Dict[str, Any] = {}
 # 注意：不同字体在同一字号下的字宽不同（实测「你好，冒险岛！」STHeiti 84px vs
 # PingFang 系 ~69px），所以字体选谁会影响文字的像素级结果 —— 布局已对齐，
 # 剩余差异只来自字体本身。
+# macOS 在前（开发与像素级验收都在 mac 上做，基准也是它），
+# 后面补 Windows / Linux 的常见中文字体 —— 否则跨平台时 PIL 会退回内置点阵字体，
+# 气泡里的中文直接变方框。
 _FONT_CANDIDATES = (
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/PingFang SC.ttc",
@@ -1295,6 +1304,16 @@ _FONT_CANDIDATES = (
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/Library/Fonts/Arial Unicode.ttf",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",          # 微软雅黑
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/simhei.ttf",        # 黑体
+    "C:/Windows/Fonts/simsun.ttc",        # 宋体
+    # Linux（Noto / 文泉驿 / 文鼎）
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
 )
 
 

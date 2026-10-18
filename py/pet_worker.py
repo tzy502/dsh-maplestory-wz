@@ -35,8 +35,11 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # ── wzpy 定位（可被 WZPY_PATH 覆盖；逐个候选尝试）─────────────────────
+# 内置副本排第一（同 wz_worker）：插件自带读取器，不依赖会被清理的外部缓存目录
+_VENDOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor")
 WZPY_CANDIDATES = [
     os.environ.get("WZPY_PATH") or "",
+    _VENDOR,
     os.path.expanduser("~/.hermes/cache/scratch/wz-python"),
     os.path.expanduser("~/wz-python"),
     "/opt/wz-python",
@@ -99,7 +102,9 @@ from wzpy.properties import (  # noqa: E402
 )
 from PIL import Image  # noqa: E402
 
-DATA_DIR = os.environ.get("PET_DATA_DIR") or "/Volumes/SSD/mxd/mxd/Data"
+# 不给本机默认值：硬编码某台机器的路径对别人没意义，
+# 还会把「没配置」表现成「路径不存在」这种难懂的报错。
+DATA_DIR = os.environ.get("PET_DATA_DIR") or ""
 # 区域名直接用 wzpy 的键名（GMS / EMS / BMS）。
 # 没有 CMS 这个键：国服客户端是零 IV，在 wzpy 里就叫 BMS —— 用错了会在
 # 解码时抛 KeyError 或解析出空字符串表，所以这里不做名字映射。
