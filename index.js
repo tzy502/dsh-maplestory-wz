@@ -69,6 +69,32 @@ const PYTHON_CANDIDATES = [
   'python3',
 ];
 
+// WzLib 半边的解释器（.NET）。用户机器上 dotnet 未必在 PATH，按候选逐个试；
+// DOTNET_ROOT 也会影响 apphost 找运行时，所以一并作为候选来源。
+const DOTNET_CANDIDATES = [
+  process.env.DOTNET_PATH,
+  process.env.DOTNET_ROOT ? join(process.env.DOTNET_ROOT, 'dotnet') : '',
+  '/Volumes/SSD/C#/dotnet',
+  '/usr/local/share/dotnet/dotnet',
+  '/opt/homebrew/bin/dotnet',
+  join(homedir(), '.dotnet', 'dotnet'),
+  'dotnet',
+];
+
+// .NET worker 的编译产物：优先 Release，其次 Debug。配置项可显式指定，
+// 便于将来换成自包含发布的单文件（那时用户不需要装 .NET）。
+function resolveWzLibWorker(config) {
+  if (config?.wzlibWorker) return config.wzlibWorker;
+  const base = join(HERE, 'net', 'WzWorker', 'bin');
+  for (const cfg of ['Release', 'Debug']) {
+    for (const f of ['wzworker.dll', 'wzworker']) {
+      const p = join(base, cfg, 'net9.0', f);
+      if (existsSync(p)) return p;
+    }
+  }
+  return '';
+}
+
 export const inject = ['tools', 'webServer'];
 
 /** 与 Python worker 的一问一答通道。 */
@@ -83,6 +109,8 @@ class WzWorker {
    */
   constructor(config, logger, opts = {}) {
     this.script = opts.script || WORKER;
+    // 'python'（wzpy）| 'dotnet'（WzLib）：协议一致，只有启动命令不同
+    this.backend = opts.backend || 'python';
     this.envPrefix = opts.envPrefix || 'WZ';
     this.id = opts.id || 'maplestory-wz';
     this.config = config;
@@ -93,6 +121,15 @@ class WzWorker {
     this.buffer = '';
     this.stderrTail = [];
     this.startPromise = null;
+  }
+
+  resolveDotnet() {
+    if (this.config.dotnet) return this.config.dotnet;
+    for (const cand of DOTNET_CANDIDATES) {
+      if (!cand) continue;
+      if (cand === 'dotnet' || existsSync(cand)) return cand;
+    }
+    return 'dotnet';
   }
 
   resolvePython() {
@@ -122,7 +159,21 @@ class WzWorker {
       if (this.config.cmsdlPath) env.WZ_CMSDL = this.config.cmsdlPath;
       if (this.config.cmsdlDir) env.WZ_CMSDL_DIR = this.config.cmsdlDir;
 
-      const child = spawn(python, [this.script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      let child;
+      if (this.backend === 'dotnet') {
+        const dotnet = this.resolveDotnet();
+        const worker = resolveWzLibWorker(this.config);
+        if (!worker) {
+          throw new Error('WzLib worker 未编译：在 net/WzWorker 下执行 dotnet build -c Release，或用配置项 wzlibWorker 指定产物路径');
+        }
+        // apphost 需要 DOTNET_ROOT 才能找到运行时；给一个已知可用的根兜底
+        if (!env.DOTNET_ROOT && existsSync('/Volumes/SSD/C#/dotnet')) env.DOTNET_ROOT = '/Volumes/SSD/C#';
+        // 用 dotnet <dll> 启动比直接跑 apphost 稳（后者强依赖 DOTNET_ROOT 猜对）
+        const argv = worker.endsWith('.dll') ? [worker] : [];
+        child = spawn(dotnet, argv, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      } else {
+        child = spawn(python, [this.script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      }
       this.child = child;
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk) => this.onData(chunk));
@@ -268,8 +319,49 @@ export function apply(ctx, rawConfig = {}) {
     version: Number.isFinite(rawConfig.version) ? Number(rawConfig.version) : 228,
     cmsdlPath: typeof rawConfig.cmsdlPath === 'string' && rawConfig.cmsdlPath ? rawConfig.cmsdlPath : undefined,
     cmsdlDir: typeof rawConfig.cmsdlDir === 'string' && rawConfig.cmsdlDir ? join(rawConfig.cmsdlDir) : CMSDL_DIR,
+    // WZ 读取引擎：'wzpy'（Python 半边，缺省）| 'wzlib'（.NET 半边，WzComparerR2）
+    engine: typeof rawConfig.engine === 'string' && rawConfig.engine ? rawConfig.engine.toLowerCase() : 'auto',
+    dotnet: typeof rawConfig.dotnet === 'string' && rawConfig.dotnet ? rawConfig.dotnet : undefined,
+    wzlibWorker: typeof rawConfig.wzlibWorker === 'string' && rawConfig.wzlibWorker ? rawConfig.wzlibWorker : undefined,
   };
   const worker = new WzWorker(config, logger);
+
+  // engine='wzlib' 时，**纯读取类**命令改由 .NET/WzLib 半边执行；
+  // 渲染类（sprite / char / map / balloon / chair）仍在 Python 半边 —— 那些还没迁。
+  // 路由放在这一层而不是各 setter 里，是为了让调用方完全无感。
+  const wanted = String(config.engine || 'auto').toLowerCase();
+  const wziLibCommands = new Set(['packs', 'tree', 'search', 'get', 'packs_ms', 'msPacks', 'ping']);
+
+  // engine:
+  //   'auto'（缺省）—— 机器上有 .NET 且 worker 已编译就用 WzLib，否则回退 Python
+  //   'wzlib'       —— 强制 WzLib（缺 .NET 时报错，便于排查）
+  //   'wzpy'        —— 强制 Python 半边
+  const dotnetReady = (() => {
+    if (wanted === 'wzpy') return false;
+    if (!resolveWzLibWorker(config)) return false;
+    const cand = config.dotnet || DOTNET_CANDIDATES.find((c) => c && (c === 'dotnet' || existsSync(c)));
+    if (!cand) return false;
+    // 'dotnet' 是 PATH 上的名字，交给 spawn 去解析；其余必须是真实文件
+    return cand === 'dotnet' ? true : existsSync(cand);
+  })();
+  const useWzLib = wanted === 'wzpy' ? false : (wanted === 'wzlib' ? true : dotnetReady);
+  if (wanted === 'wzlib' && !dotnetReady) {
+    logger.warn?.('engine=wzlib 但找不到 .NET 或 worker 未编译，将回退 wzpy');
+  }
+  config.engineResolved = useWzLib ? 'wzlib' : 'wzpy';
+  const libWorker = useWzLib
+    ? new WzWorker(config, logger, { backend: 'dotnet', id: 'maplestory-wz-lib' })
+    : null;
+
+  // 统一出口：读命令按 engine 分流，其余一律走 Python
+  const callWz = async (cmd, args) => {
+    if (libWorker && wziLibCommands.has(cmd)) {
+      // 两个半边的命令名有小写差异（python 用 packs_ms，.NET 用 msPacks）
+      const mapped = cmd === 'packs_ms' ? 'msPacks' : cmd;
+      return libWorker.call(mapped, args);
+    }
+    return worker.call(cmd, args);
+  };
   /** cmsdl 资源更新：下载 cmsdl 本体 + 跑 cmsdl，进度写内存供面板轮询。 */
   const cmsdl = createCmsdlManager({
     worker,
@@ -281,6 +373,7 @@ export function apply(ctx, rawConfig = {}) {
   const cmsdlState = { tool: false, at: 0 };
 
   ctx.effect(() => () => worker.dispose(), 'maplestory-wz: worker');
+  if (libWorker) ctx.effect(() => () => libWorker.dispose(), 'maplestory-wz: wzlib worker');
   ctx.effect(() => () => cmsdl.dispose(), 'maplestory-wz: cmsdl');
 
   // ── 面板数据接口（HTTP /api，Client 用 fetch）──────────────────────
@@ -326,16 +419,16 @@ export function apply(ctx, rawConfig = {}) {
 
   const api = {
     async packs() {
-      return worker.call('packs');
+      return callWz('packs');
     },
     async tree(args) {
-      return worker.call('tree', args ?? {});
+      return callWz('tree', args ?? {});
     },
     async search(args) {
-      return worker.call('search', args ?? {});
+      return callWz('search', args ?? {});
     },
     async get(args) {
-      const info = await worker.call('get', args ?? {});
+      const info = await callWz('get', args ?? {});
       if ((!info.animations || info.animations.length === 0) && args?.path) {
         const preview = await worker.call('sprite', { path: args.path, animation: '', scale: 1 });
         info.preview = preview;
@@ -389,7 +482,7 @@ export function apply(ctx, rawConfig = {}) {
     },
     // ── Packs/*.ms（结构 / Spine 骨骼；像素仍在 _Canvas）─────────────
     async msPacks() {
-      return worker.call('packs_ms', {});
+      return callWz('packs_ms', {});
     },
     async msMob(args) {
       return worker.call('ms_mob', args ?? {});
@@ -1255,6 +1348,9 @@ export function apply(ctx, rawConfig = {}) {
 
   // 预热 worker（失败只记录，不影响其它功能）
   worker.start().catch((error) => logger.warn?.(`WZ worker 预热失败：${error?.message ?? error}`));
+  if (libWorker) {
+    libWorker.start().catch((error) => logger.warn?.(`WzLib worker 预热失败：${error?.message ?? error}`));
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   //  桌面宠物（原 @local/dsh-desktop-pet，已合并进来）

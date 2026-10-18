@@ -14,3 +14,7 @@ __pycache__/
 
 # 验收脚本的临时输出
 /tmp/
+
+# .NET worker 的构建产物（由 net/WzWorker 自行 dotnet build 生成）
+net/WzWorker/bin/
+net/WzWorker/obj/
