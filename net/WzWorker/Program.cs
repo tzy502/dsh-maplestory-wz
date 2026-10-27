@@ -188,7 +188,16 @@ internal static partial class Program
             };
         }
 
-        var root = FindTop(pack) ?? throw new FileNotFoundException($"没有这个分类：{pack}（{_dataDir}）");
+        // 根目录列的是**文件系统目录**，而展开是按 WZ 树找同名节点 —— 两者并不等价：
+        //   · Base 是加载入口（它的内容就是树的顶层），树里没有名为 Base 的节点；
+        //   · Packs 放的是 .ms 结构容器，也不是 WZ 分类。
+        // 直接抛「没有这个分类」会让用户从根目录一路点进去时断在第二个文件夹上，
+        // 所以这里回落到文件系统列举，保持「从根目录探索」的连贯。
+        var root = FindTop(pack);
+        if (root is null)
+        {
+            return CmdTreeFs(pack, args);
+        }
         var path = (args["path"]?.GetValue<string>() ?? "").Trim('/');
         var node = path.Length == 0 ? root : root.FindNodeByPath(path.Replace('/', '\\'), true);
         if (node is null) throw new FileNotFoundException($"{pack}/{path} 不存在");
@@ -214,6 +223,45 @@ internal static partial class Program
             ["kind"] = IsImageLike(current) ? "image" : "dir",
             ["children"] = children,
             ["total"] = current.Nodes.Count,
+        };
+    }
+
+    /// <summary>
+    /// 非 WZ 分类的目录：直接按文件系统列。用于 Base / Packs 这类
+    /// 「在数据目录里存在、但不是 WZ 树节点」的目录。
+    /// </summary>
+    private static JsonNode CmdTreeFs(string pack, JsonObject args)
+    {
+        var path = (args["path"]?.GetValue<string>() ?? "").Trim('/');
+        var dir = Path.Combine(_dataDir, pack, path.Replace('/', Path.DirectorySeparatorChar));
+        if (!Directory.Exists(dir)) throw new FileNotFoundException($"{pack}/{path} 不存在（{dir}）");
+
+        var limit = args["limit"]?.GetValue<int>() ?? 400;
+        var rows = new JsonArray();
+        foreach (var d in Directory.GetDirectories(dir).OrderBy(x => x, StringComparer.Ordinal))
+        {
+            rows.Add(new JsonObject { ["name"] = Path.GetFileName(d), ["kind"] = "dir" });
+        }
+        foreach (var f in Directory.GetFiles(dir).OrderBy(x => x, StringComparer.Ordinal))
+        {
+            if (rows.Count >= limit) break;
+            var bn = Path.GetFileName(f);
+            if (bn.StartsWith('.')) continue;
+            rows.Add(new JsonObject
+            {
+                ["name"] = bn,
+                ["kind"] = "file",
+                ["mb"] = Math.Round(new FileInfo(f).Length / 1e6, 1),
+            });
+        }
+        return new JsonObject
+        {
+            ["pack"] = pack,
+            ["path"] = path,
+            ["kind"] = "fs",
+            ["children"] = rows,
+            ["total"] = rows.Count,
+            ["note"] = "该目录不是 WZ 分类（不在 WZ 树里），按文件系统列举",
         };
     }
 

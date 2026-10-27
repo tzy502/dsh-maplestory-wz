@@ -22,6 +22,8 @@ CASES=(
   'packs|{"cmd":"packs","args":{}}'
   'tree|{"cmd":"tree","args":{}}'
   'tree:Mob|{"cmd":"tree","args":{"pack":"Mob","limit":5}}'
+  'tree:Base|{"cmd":"tree","args":{"pack":"Base","limit":5}}'
+  'tree:Packs|{"cmd":"tree","args":{"pack":"Packs","limit":5}}'
   'search|{"cmd":"search","args":{"query":"花蘑菇","limit":3}}'
   'get|{"cmd":"get","args":{"path":"Mob/1210102.img"}}'
   'frameSheet|{"cmd":"frameSheet","args":{"path":"Mob/1210102.img","animation":"stand"}}'
