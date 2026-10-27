@@ -46,6 +46,7 @@ CASES=(
   'mapRandom|{"cmd":"mapRandom","args":{}}'
   'mapCanvas|{"cmd":"mapCanvas","args":{"id":"100000000","scale":0.25}}'
   'mapMinimap|{"cmd":"mapMinimap","args":{"id":"100000000"}}'
+  'mapCanvas:reactor|{"cmd":"mapCanvas","args":{"id":"101020000","scale":1}}'
   'updateStatus|{"cmd":"updateStatus","args":{}}'
   'updateProbe|{"cmd":"updateProbe","args":{}}'
   'updatePlan|{"cmd":"updatePlan","args":{}}'

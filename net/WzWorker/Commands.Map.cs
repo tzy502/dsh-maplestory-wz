@@ -801,7 +801,29 @@ internal static partial class Program
             }
         }
 
-        // reactor 精灵在 旧实现里没有提供数据源（self.reactor 为 None），这里保持同样的空缺。
+        // 反应物（采矿/采药/任务物）：地图里只存 id/x/y/f，精灵在 Reactor/<id>.img。
+        // 旧实现没画这一层，补上之后采药地图才不会看着像空的。
+        // 层次按游戏表现放在物件与 NPC 之后、前景背景之前。
+        var rawReactor = Sub(root, "reactor");
+        var reactorPack = FindTop("Reactor");
+        if (rawReactor is not null && reactorPack is not null)
+        {
+            foreach (var item in rawReactor.Nodes)
+            {
+                var id = NodeInt(item, "id");
+                if (id <= 0) continue;
+                var asset = Sub(reactorPack, $"{id}.img");
+                if (asset is null) continue;
+
+                // 状态 0 是待机态，其下第 0 帧就是静止画面；取不到就退回整张图找首帧。
+                var stateZero = Sub(asset, "0");
+                var frame = FrameAt(stateZero is null ? asset : Sub(stateZero, "0") ?? stateZero, 0);
+                if (frame is null) continue;
+
+                DrawSprite(output, bounds, scale, frame, reactorPack,
+                    NodeInt(item, "x"), NodeInt(item, "y"), NodeInt(item, "f") != 0);
+            }
+        }
         foreach (var item in backItems)
             if (NodeInt(item, "front") != 0)
                 DrawBackground(output, bounds, scale, item, 0, mapTop);
