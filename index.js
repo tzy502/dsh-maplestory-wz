@@ -1405,13 +1405,26 @@ export function apply(ctx, rawConfig = {}) {
       if (parsed && typeof parsed.mobId === 'string' && parsed.mobId) currentMobId = parsed.mobId;
       if (parsed && (parsed.mode === 'chara' || parsed.mode === 'mob')) currentMode = parsed.mode;
       if (parsed && Array.isArray(parsed.equips) && parsed.equips.length) currentEquips = parsed.equips.map(String);
+      if (parsed && typeof parsed.still === 'boolean') currentStill = parsed.still;
       return parsed ?? {};
     } catch {
       return {};
     }
   };
+  // 站定不动：打开后桌宠只播 stand，不再随机走动/起飞。
+  // 存在 pet-config.json 里，重启后仍然生效。
+  let currentStill = false;
+
   const savePetConfig = async (patch) => {
-    const next = { mobId: currentMobId, ...patch };
+    // 先读回已有内容再合并：这个函数只收到「这次改动的字段」，
+    // 直接覆盖会把 mode / equips / still 冲掉（历史上就丢过一次配置）。
+    let prev = {};
+    try {
+      prev = JSON.parse(await readFile(PET_CONFIG, 'utf8')) ?? {};
+    } catch {
+      prev = {};
+    }
+    const next = { ...prev, mobId: currentMobId, ...patch };
     if (typeof next.mobId === 'string' && next.mobId) currentMobId = next.mobId;
     await mkdir(PET_OUT_DIR, { recursive: true });
     await writeFile(PET_CONFIG, JSON.stringify(next, null, 2), 'utf8');
@@ -1485,6 +1498,8 @@ export function apply(ctx, rawConfig = {}) {
         earType,
         equipsFrom: Array.isArray(args.equips) && args.equips.length ? 'args' : (fromDoll ? 'doll-config' : 'config'),
         anims,
+        // 客户端一进页面就知道该不该动，省一次额外轮询
+        still: currentStill,
         urlPrefix: ROUTE_PREFIX,
         defaults: petDefaults,
       };
@@ -1507,10 +1522,19 @@ export function apply(ctx, rawConfig = {}) {
       const out = await petWorker.call('presets', {});
       return { ...out, current: currentMobId };
     },
+    /**
+     * 站定不动开关。
+     * 打开后桌宠只播 stand、不再随机走动或起飞；关掉就恢复自由走动。
+     */
+    async petSetStill(args = {}) {
+      currentStill = args.still === true || args.still === 'true' || args.still === 1;
+      await savePetConfig({ still: currentStill });
+      return { still: currentStill, configPath: PET_CONFIG };
+    },
     /** 当前宠物与持久化路径。 */
     async petGet() {
       await loadPetConfig();
-      return { mobId: currentMobId, mode: currentMode, equips: currentEquips, configPath: PET_CONFIG };
+      return { mobId: currentMobId, mode: currentMode, equips: currentEquips, still: currentStill, configPath: PET_CONFIG };
     },
     /** 切到纸娃娃模式并（可选）指定部位。 */
     async petSetChara(args = {}) {

@@ -147,6 +147,7 @@ try {
   check('桌宠换宠候选非空', (search.hits || []).length > 0, `${(search.hits || []).length} 条`);
   const info = await api('petGet');
   check('桌宠配置可读', typeof info.mobId === 'string' && info.mobId.length > 0, info.mobId);
+  check('站定开关可读', typeof info.still === 'boolean', `still=${info.still}`);
 } catch (e) {
   check('桌宠出图', false, String(e.message).slice(0, 100));
 }
